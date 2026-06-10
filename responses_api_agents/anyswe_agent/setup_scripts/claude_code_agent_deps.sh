@@ -1,8 +1,5 @@
 #!/bin/bash
-# Install agent deps for claude_code_agent into $DEPS_DIR. Claude Code is an npm
-# CLI, so we bring a portable Node alongside the portable Python and install the
-# claude binary into $DEPS_DIR/bin (which the runner puts on PATH inside the
-# container, so claude_code_agent.setup_claude_code.ensure_claude_code finds it).
+# Install claude_code_agent deps into $DEPS_DIR: portable Node + the claude CLI on PATH.
 set -euo pipefail
 set -x
 

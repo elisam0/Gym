@@ -1,6 +1,5 @@
 #!/bin/bash
-# Install agent deps for hermes_agent into $DEPS_DIR (a self-contained tree
-# mounted read-only into the SWEBench container at /agent_deps_mount).
+# Install hermes_agent deps into $DEPS_DIR (mounted read-only at /agent_deps_mount).
 set -euo pipefail
 set -x
 
@@ -22,7 +21,6 @@ echo "Installing hermes-agent ($HERMES_SPEC)"
 "$DEPS_DIR/bin/python3" -m pip install --force-reinstall --no-deps "$HERMES_SPEC"
 "$DEPS_DIR/bin/python3" -m pip install "$HERMES_SPEC"
 
-# Sanity check the imports hermes_agent/app.py performs at module load.
 "$DEPS_DIR/bin/python3" -c "import model_tools; from run_agent import AIAgent; print('hermes-agent OK')"
 
 echo "hermes_agent deps ready at $DEPS_DIR"
