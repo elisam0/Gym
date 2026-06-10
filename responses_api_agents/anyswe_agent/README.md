@@ -14,13 +14,13 @@ policy_api_key: EMPTY
 policy_model_name: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
 ```
 
-Prepare a 5-task smoke set:
+Prepare a 5-task example set (tasks+images):
 
 ```bash
 python responses_api_agents/anyswe_agent/prepare.py --limit 5
 ```
 
-Start the agent and model servers:
+Start the environment:
 
 ```bash
 ng_run "+config_paths=[responses_api_agents/anyswe_agent/configs/anyswe_hermes.yaml,responses_api_models/vllm_model/configs/vllm_model.yaml]" \
