@@ -22,6 +22,7 @@ concurrently in a second Apptainer container. Patch extraction is always
 
 import asyncio
 import glob
+import hashlib
 import json
 import os
 import shlex
@@ -317,12 +318,12 @@ SAMPLING = json.loads(os.environ.get("NGSWE_SAMPLING", "{{}}"))
 
 from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming, NeMoGymEasyInputMessage
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
+from nemo_gym.server_utils import ServerClient
 from {agent_module} import {agent_class}, {agent_cfg_class}
 
 
-class _MockClient:
-    global_config_dict = {{}}
-    def _build_server_base_url(self, cfg): return MODEL_URL
+_mock_client = ServerClient.model_construct(global_config_dict={{}})
+_mock_client._build_server_base_url = lambda cfg: MODEL_URL
 
 
 # Sampling params the agent's config actually declares (e.g. hermes' `temperature`)
@@ -337,7 +338,7 @@ config = {agent_cfg_class}(
     resources_server=ResourcesServerRef(name="anyswe", type="resources_servers"),
     **{{**AGENT_KWARGS, **_cfg_sampling}},
 )
-agent = {agent_class}(config=config, server_client=_MockClient())
+agent = {agent_class}(config=config, server_client=_mock_client)
 
 # Patch URL resolution for hermes-style and claude-code-style agents.
 if hasattr(agent, "_resolve_model_base_url"):
@@ -466,21 +467,25 @@ class GymAgentHarnessProcessor(BaseModel):
         """Install agent Python packages / binaries into a portable prefix (idempotent)."""
         deps_dir = self._parent / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
-        if sentinel.exists():
+        script = self._parent / "setup_scripts" / f"{self._agent_key}_deps.sh"
+        # Reinstall when the setup recipe or agent pin changes.
+        reqs = PARENT_DIR / "responses_api_agents" / self._agent_key / "requirements.txt"
+        recipe_src = b"".join(p.read_bytes() for p in (script, reqs) if p.exists()) or b"no-script"
+        recipe = hashlib.sha256(recipe_src).hexdigest()
+        if sentinel.exists() and sentinel.read_text().strip() == recipe:
             print(f"Agent deps already at {deps_dir}", flush=True)
             return deps_dir
 
-        script = self._parent / "setup_scripts" / f"{self._agent_key}_deps.sh"
         if not script.exists():
             print(f"No setup script for {self._agent_key}, skipping deps install", flush=True)
             deps_dir.mkdir(parents=True, exist_ok=True)
-            sentinel.touch()
+            sentinel.write_text(recipe)
             return deps_dir
 
         deps_dir.mkdir(parents=True, exist_ok=True)
         proc = Popen(f"DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}", shell=True)
         assert proc.wait() == 0, f"Agent deps setup failed ({script})"
-        sentinel.touch()
+        sentinel.write_text(recipe)
         return deps_dir
 
     def get_run_command(self) -> ExecuteContainerCommandArgs:
@@ -699,7 +704,14 @@ class AnySweAgent(SimpleResponsesAPIAgent):
     # ── container utilities ───────────────────────────────────────────────────
 
     @staticmethod
-    def _find_container(data_point: dict) -> str:
+    def _container_path_variants(path: str) -> list[str]:
+        """Try a SIF path as-is and, when relative, under this package dir."""
+        if "://" in path or os.path.isabs(path):
+            return [path]
+        return [path, str(Path(__file__).parent / path)]
+
+    @classmethod
+    def _find_container(cls, data_point: dict) -> str:
         """Locate the Apptainer SIF for this instance."""
         instance_id = data_point["instance_id"]
         formatters = data_point["container_formatter"]
@@ -712,20 +724,21 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             replaced = instance_id.replace("__", r)
             candidates += [replaced, replaced.lower()]
 
+        # Apptainer may run from a different CWD than this resolver.
         for fmt in formatters:
             for cid in candidates:
-                path = fmt.format(instance_id=cid)
-                if os.path.exists(path):
-                    return path
+                for path in cls._container_path_variants(fmt.format(instance_id=cid)):
+                    if os.path.exists(path):
+                        return path if "://" in path else os.path.abspath(path)
 
         for fmt in formatters:
             fallback = fmt.format(instance_id=instance_id.replace("__", replacements[0]))
-            d = os.path.dirname(fallback)
-            if os.path.exists(d):
-                for term in candidates:
-                    matches = glob.glob(os.path.join(d, f"*{term}*.sif"))
-                    if matches:
-                        return matches[0]
+            for d in (os.path.dirname(p) for p in cls._container_path_variants(fallback)):
+                if os.path.exists(d):
+                    for term in candidates:
+                        matches = glob.glob(os.path.join(d, f"*{term}*.sif"))
+                        if matches:
+                            return os.path.abspath(matches[0])
 
         raise FileNotFoundError(f"No container found for {instance_id}")
 
@@ -757,8 +770,13 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             f"--env NGSWE_AGENT_KWARGS={shlex.quote(json.dumps(params.agent_kwargs))} "
             f"--env NGSWE_SAMPLING={shlex.quote(json.dumps(sampling))} "
         )
+        script_dir = params.persistent_dir / "container_scripts"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script_path = script_dir / "agent_script.sh"
+        script_path.write_text(params.agent_command.command)
+        mounts.append(f"--mount type=bind,src={script_path},dst=/container_scripts/agent_script.sh,ro")
         return self._apptainer_exec(
-            params, mounts, "/agent_deps_mount/bin/python /trajectories_mount/agent_runner.py", env=env
+            params, mounts, "bash /container_scripts/agent_script.sh", env=env
         )
 
     def _build_eval_apptainer_cmd(self, params: AnySweInstanceConfig) -> str:

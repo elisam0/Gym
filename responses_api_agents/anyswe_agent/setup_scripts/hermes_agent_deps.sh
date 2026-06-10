@@ -9,12 +9,17 @@ source "$SCRIPT_DIR/_portable_python.sh"
 
 : "${DEPS_DIR:?DEPS_DIR must be set}"
 : "${NEMO_GYM_ROOT:?NEMO_GYM_ROOT must be set}"
-HERMES_SPEC="${HERMES_SPEC:-hermes-agent}"
+
+# Pin must match hermes_agent/app.py's AIAgent API; override only for experiments.
+HERMES_REQ="$NEMO_GYM_ROOT/responses_api_agents/hermes_agent/requirements.txt"
+HERMES_SPEC="${HERMES_SPEC:-$(sed -n 's/^hermes-agent @ //p' "$HERMES_REQ")}"
+: "${HERMES_SPEC:?could not read hermes-agent pin from $HERMES_REQ}"
 
 install_portable_python
 install_nemo_gym_deps
 
 echo "Installing hermes-agent ($HERMES_SPEC)"
+"$DEPS_DIR/bin/python3" -m pip install --force-reinstall --no-deps "$HERMES_SPEC"
 "$DEPS_DIR/bin/python3" -m pip install "$HERMES_SPEC"
 
 # Sanity check the imports hermes_agent/app.py performs at module load.
