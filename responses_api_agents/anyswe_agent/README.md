@@ -14,7 +14,7 @@ policy_api_key: EMPTY
 policy_model_name: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
 ```
 
-Prepare a 5-task example set (tasks+images):
+Prepare a 5 examples (tasks+images):
 
 ```bash
 python responses_api_agents/anyswe_agent/prepare.py --limit 5
