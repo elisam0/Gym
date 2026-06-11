@@ -46,13 +46,6 @@ timeouts or unreliable rewards.
 `data/sifs/{instance_id}.sif`.
 
 ```bash
-# dataset only
-python responses_api_agents/anyswe_agent/prepare.py --no-images
-
-# one instance
-python responses_api_agents/anyswe_agent/prepare.py --instance-id django__django-13741
-
-# full SWE-bench Verified
 python responses_api_agents/anyswe_agent/prepare.py
 ```
 
@@ -73,7 +66,5 @@ agent_kwargs: {max_turns: 100, terminal_backend: local}
 
 Agent dependencies install once at startup into a portable prefix mounted inside
 the task container. Add `setup_scripts/<agent_dir>_deps.sh` for new agents.
-
-Swap to claude-code with `configs/anyswe_claude_code.yaml`.
 
 Supported datasets: SWE-bench, SWE-bench Multilingual, R2E-Gym.
