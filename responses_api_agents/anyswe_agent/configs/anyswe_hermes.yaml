@@ -1,4 +1,3 @@
-# anyswe_agent driving the hermes_agent inside each SWEBench container.
 anyswe_hermes:
   responses_api_agents:
     anyswe_agent:
@@ -7,7 +6,6 @@ anyswe_hermes:
       description: SWE-bench run by the hermes agent natively inside the task container.
       value: Eval software engineering capabilities on SWE-bench with any Gym agent.
 
-      # Which Gym agent to run inside the SWEBench Apptainer container.
       agent_server_module: responses_api_agents.hermes_agent.app
       agent_server_class: HermesAgent
       agent_config_class: HermesAgentConfig
@@ -17,7 +15,6 @@ anyswe_hermes:
         terminal_backend: local
         enabled_toolsets: null
 
-      # Container / eval settings.
       container_formatter: ???
       swebench_agent_timeout: 2700
       swebench_tests_timeout: 1800

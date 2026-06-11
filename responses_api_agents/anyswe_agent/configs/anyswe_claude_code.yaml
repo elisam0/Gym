@@ -1,6 +1,3 @@
-# anyswe_agent driving the claude_code_agent inside each SWEBench container.
-# NOTE: claude-code speaks the Anthropic Messages API. The model_server must
-# expose POST /v1/messages (or sit behind an Anthropic-compatible shim).
 anyswe_claude_code:
   responses_api_agents:
     anyswe_agent:
@@ -24,6 +21,7 @@ anyswe_claude_code:
       concurrency: 64
       skip_eval: false
 
+      # i think should be no model server for now, testing with _local
       model_server:
         name: policy_model
         type: responses_api_models
