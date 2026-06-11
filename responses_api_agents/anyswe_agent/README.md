@@ -76,13 +76,4 @@ the task container. Add `setup_scripts/<agent_dir>_deps.sh` for new agents.
 
 Swap to claude-code with `configs/anyswe_claude_code.yaml`.
 
-# Config notes
-
-| Field | Meaning |
-|-------|---------|
-| `agent_server_module` / `agent_server_class` / `agent_config_class` | Agent to run in-container |
-| `agent_kwargs` | Extra kwargs for the agent config |
-| `container_formatter` | SIF path template with `{instance_id}` |
-| `skip_eval` | Run the agent without grading |
-
 Supported datasets: SWE-bench, SWE-bench Multilingual, R2E-Gym.
