@@ -40,19 +40,6 @@ ng_collect_rollouts \
 Each rollout row contains `reward`, the full trajectory, and `mask_sample` for
 timeouts or unreliable rewards.
 
-# Dataset and images
-
-`prepare.py` writes `data/swebench_verified.jsonl` and builds
-`data/sifs/{instance_id}.sif`.
-
-```bash
-python responses_api_agents/anyswe_agent/prepare.py
-```
-
-Image builds require `apptainer`, network access to the SWE-bench registry, and
-substantial disk space. Use `--limit` and `--jobs N` while iterating. Dataset
-prep requires `pip install datasets`.
-
 # Agent wiring
 
 Point the config at the Gym agent server:
@@ -66,5 +53,19 @@ agent_kwargs: {max_turns: 100, terminal_backend: local}
 
 Agent dependencies install once at startup into a portable prefix mounted inside
 the task container. Add `setup_scripts/<agent_dir>_deps.sh` for new agents.
+
+
+# Dataset and images
+
+`prepare.py` writes `data/swebench_verified.jsonl` and builds
+`data/sifs/{instance_id}.sif`.
+
+```bash
+python responses_api_agents/anyswe_agent/prepare.py
+```
+
+Image builds require `apptainer`, network access to the SWE-bench registry, and
+substantial disk space. Use `--limit` and `--jobs N` while iterating. Dataset
+prep requires `pip install datasets`.
 
 Supported datasets: SWE-bench, SWE-bench Multilingual, R2E-Gym.
