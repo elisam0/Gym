@@ -238,12 +238,34 @@ class HermesAgent(SimpleResponsesAPIAgent):
 
         agent._build_api_kwargs = _patched_build_api_kwargs
 
-        result = await asyncio.to_thread(
-            agent.run_conversation,
-            user_message,
-            system_message,
-            history,
-        )
+        # Install a SIGTERM handler that interrupts the agent cleanly so that
+        # run_conversation returns with partial messages instead of being killed
+        # mid-turn (which would leave response.json unwritten).
+        import signal
+
+        _loop = asyncio.get_event_loop()
+
+        def _sigterm_handler():
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("timeout")
+
+        try:
+            _loop.add_signal_handler(signal.SIGTERM, _sigterm_handler)
+        except (NotImplementedError, OSError):
+            pass  # not supported on this platform (e.g. Windows, non-main thread)
+
+        try:
+            result = await asyncio.to_thread(
+                agent.run_conversation,
+                user_message,
+                system_message,
+                history,
+            )
+        finally:
+            try:
+                _loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, OSError):
+                pass
 
         messages = result.get("messages") or []
         # aiagent omits system from returned messages
