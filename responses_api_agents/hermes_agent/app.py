@@ -29,11 +29,7 @@ from fastapi import Request
 from pydantic import ConfigDict
 
 from nemo_gym.base_resources_server import BaseRunRequest, BaseVerifyResponse
-from nemo_gym.base_responses_api_agent import (
-    BaseResponsesAPIAgentConfig,
-    Body,
-    SimpleResponsesAPIAgent,
-)
+from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body, SimpleResponsesAPIAgent
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import (
