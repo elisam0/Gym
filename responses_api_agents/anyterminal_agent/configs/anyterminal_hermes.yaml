@@ -15,8 +15,6 @@ anyterminal_hermes:
         terminal_timeout: 180
         compression_enabled: true
         compression_threshold: 0.85
-        enabled_toolsets: null
-        system_prompt: "You are an expert software engineer working inside a terminal environment. Read the task instructions carefully, use terminal commands to understand the environment, and complete the task as described. You MUST use terminal tools to explore, edit, and run commands — do not just describe what to do."
 
       # Path to pre-built Apptainer SIF files produced by prepare.py --sif-dir.
       # If omitted, Apptainer will pull docker:// images at runtime (requires internet).
@@ -28,7 +26,7 @@ anyterminal_hermes:
       tb_agent_timeout: 1800
       tb_eval_timeout: 300
       apptainer_memory_limit_mb: 32768
-      concurrency: 4
+      concurrency: 6
 
       model_server:
         name: policy_model
