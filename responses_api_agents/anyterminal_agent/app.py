@@ -62,6 +62,24 @@ def _read_task_meta(task_dir: Path) -> dict:
     return result
 
 
+def _instruction_from_input(body: NeMoGymResponseCreateParamsNonStreaming) -> str:
+    """Extract the task prompt from the Responses-API input messages.
+
+    Joins the text of all messages (handling str or content-part list, dict or model form).
+    """
+    items = body.input
+    if isinstance(items, str):
+        return items
+    parts: list[str] = []
+    for item in items or []:
+        content = getattr(item, "content", None) if not isinstance(item, dict) else item.get("content")
+        if isinstance(content, list):
+            content = "".join((p.get("text", "") if isinstance(p, dict) else getattr(p, "text", "")) for p in content)
+        if content:
+            parts.append(content)
+    return "\n".join(parts)
+
+
 ### Container process handle
 
 
@@ -220,7 +238,8 @@ class GymAgentHarnessProcessor(BaseModel):
     def get_run_command(self) -> str:
         """Write instruction.txt and agent_runner.py; return the shell command to run the agent."""
         cfg: AnyTerminalInstanceConfig = self.config
-        (cfg.persistent_dir / "instruction.txt").write_text(cfg.problem_info.get("problem_statement", ""))
+        instruction = _instruction_from_input(cfg.body)
+        (cfg.persistent_dir / "instruction.txt").write_text(instruction)
         runner = _RUNNER_TEMPLATE.format(
             agent_module=cfg.agent_server_module,
             agent_class=cfg.agent_server_class,
@@ -622,7 +641,7 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             tool_choice=params.body.tool_choice,
             tools=tools,
             metadata={
-                "input": json.dumps([]),
+                "input": json.dumps(params.body.model_dump(mode="json").get("input") or []),
                 "metrics": params.metrics_fpath.read_text(),
                 "instance_config": _safe_config_json(params),
             },

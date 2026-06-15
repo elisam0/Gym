@@ -24,8 +24,9 @@ Prerequisites:
   - Harbor CLI on PATH (for dataset download).
   - `apptainer` on PATH for SIF builds (skip with --no-build-sif).
 
-Schema anyterminal_agent expects: each row has `responses_create_params.metadata` with
-`instance_id`, `task_name`, `docker_image`, `problem_statement`, and `task_dir`
+Schema anyterminal_agent expects: each row has the task prompt in
+`responses_create_params.input` (as a user message) and `responses_create_params.metadata`
+with `instance_id`, `task_name`, `docker_image`, and `task_dir`
 (absolute path to the task definition directory on the host).
 """
 
@@ -102,13 +103,12 @@ def _to_gym_row(task_dir: Path, task_cfg: dict) -> dict:
     task_name = task_dir.name
     return {
         "responses_create_params": {
-            "input": [],
+            "input": [{"role": "user", "content": task_cfg.get("problem_statement", "")}],
             "model": "model",  # placeholder; overridden at collect time via ng_collect_rollouts
             "metadata": {
                 "instance_id": f"terminal_bench::{task_name}",
                 "task_name": task_name,
                 "docker_image": task_cfg.get("docker_image", "ubuntu:22.04"),
-                "problem_statement": task_cfg.get("problem_statement", ""),
                 "task_dir": str(task_dir.resolve()),
                 "agent_timeout_sec": str(task_cfg["agent_timeout_sec"])
                 if task_cfg.get("agent_timeout_sec") is not None
