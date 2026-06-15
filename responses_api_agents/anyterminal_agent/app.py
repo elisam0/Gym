@@ -281,6 +281,7 @@ class AnyTerminalServerConfig(BaseModel):
     run_session_id: str
     base_results_dir: Path
     model_server_url: str
+    model_name: str = ""
     nemo_gym_root: Path
     agent_deps_dir: Path
 
@@ -454,6 +455,9 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             )
             model_url = self.server_client._build_server_base_url(model_cfg)
 
+        # Real model identifier the policy server serves, set via +policy_model_name=... at run time.
+        model_name = str(self.server_client.global_config_dict.get("policy_model_name") or "")
+
         agent_deps_dir = GymAgentHarnessProcessor(config=self.config).setup()
         session_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
         workspace = Path(__file__).parent
@@ -465,6 +469,7 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             run_session_id=session_id,
             base_results_dir=results_dir / f"anyterminal_results_{session_id}",
             model_server_url=model_url,
+            model_name=model_name,
             nemo_gym_root=PARENT_DIR,
             agent_deps_dir=agent_deps_dir,
         )
@@ -624,7 +629,7 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
         response_path = params.persistent_dir / "response.json"
         if response_path.exists():
             data = json.loads(response_path.read_text())
-            data["model"] = data.get("model") or params.body.model or "model"
+            data["model"] = params.model_name
             saved = NeMoGymResponse.model_validate(data)
             output_items = saved.output
             tools = saved.tools or []
@@ -634,7 +639,7 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
         return NeMoGymResponse(
             id=f"anyterminal-{params.instance_id}",
             created_at=int(time.time()),
-            model=params.body.model or "model",
+            model=params.model_name,
             object="response",
             output=output_items,
             parallel_tool_calls=params.body.parallel_tool_calls,
@@ -658,7 +663,11 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
 
             return AnyTerminalVerifyResponse(
                 responses_create_params=body.responses_create_params.model_dump()
-                | {"input": json.loads(meta["input"]), "tools": [t.model_dump() for t in (response.tools or [])]},
+                | {
+                    "input": json.loads(meta["input"]),
+                    "tools": [t.model_dump() for t in (response.tools or [])],
+                    "model": response.model,
+                },
                 response=response,
                 reward=1.0 if metrics.resolved else 0.0,
                 **metrics.model_dump(),

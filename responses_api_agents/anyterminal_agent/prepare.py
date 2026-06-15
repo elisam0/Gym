@@ -104,7 +104,6 @@ def _to_gym_row(task_dir: Path, task_cfg: dict) -> dict:
     return {
         "responses_create_params": {
             "input": [{"role": "user", "content": task_cfg.get("problem_statement", "")}],
-            "model": "model",  # placeholder; overridden at collect time via ng_collect_rollouts
             "metadata": {
                 "instance_id": f"terminal_bench::{task_name}",
                 "task_name": task_name,
