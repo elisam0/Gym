@@ -155,7 +155,7 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     max_turns: int = 90
     enabled_toolsets: Optional[list[str]] = None
     disabled_toolsets: Optional[list[str]] = None
-    temperature: float = 1.0
+    temperature: float | None = None
     terminal_backend: str = "local"
     terminal_timeout: int = 180
     system_prompt: Optional[str] = None
