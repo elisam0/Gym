@@ -477,7 +477,6 @@ class HermesAgent(SimpleResponsesAPIAgent):
             persist_session=False,
             save_trajectories=False,
         )
-
         _original_build_api_kwargs = agent._build_api_kwargs
 
         def _patched_build_api_kwargs(api_messages):
