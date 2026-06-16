@@ -397,8 +397,6 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 "enabled": self.config.checkpoints_enabled,
             },
         }
-        if self.config.nemo_relay_enabled:
-            config["plugins"] = {"enabled": ["observability/nemo_relay"]}
         return yaml.dump(config, default_flow_style=False)
 
     def model_post_init(self, __context: Any) -> None:
