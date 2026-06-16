@@ -41,8 +41,7 @@ from pathlib import Path
 _THIS_DIR = Path(__file__).parent
 
 DEFAULT_TASKS_CACHE = Path.home() / ".cache" / "harbor" / "tasks"
-DEFAULT_DATASET_NAME = "terminal-bench"
-DEFAULT_DATASET_VERSION = "2.0"
+DEFAULT_DATASET_NAME = "terminal-bench@2.0"
 
 
 def _load_task_config(task_dir: Path) -> dict:
@@ -86,9 +85,23 @@ def _load_task_config(task_dir: Path) -> dict:
     }
 
 
+def _dataset_dir_name(dataset: str) -> str:
+    """Local directory harbor exports a dataset into.
+
+    Harbor export mode writes tasks to ``<output-dir>/<name>/<task>/`` where ``<name>`` is the
+    final path component of the dataset reference, with any ``@version`` stripped. This normalizes
+    both reference styles so the download target, skip check, and task lookup all agree:
+
+        terminal-bench@2.0                  -> terminal-bench
+        terminal-bench/terminal-bench-2-1   -> terminal-bench-2-1
+        terminal-bench/terminal-bench-2-1@6 -> terminal-bench-2-1
+    """
+    return dataset.split("@", 1)[0].rstrip("/").split("/")[-1]
+
+
 def _find_task_dirs(cache_dir: Path, dataset_name: str) -> list[Path]:
-    """Locate all task directories under the harbor cache for a given dataset version."""
-    tasks_dir = cache_dir / f"{dataset_name}"
+    """Locate all task directories under the harbor cache for a given dataset."""
+    tasks_dir = cache_dir / _dataset_dir_name(dataset_name)
     if tasks_dir.exists():
         return sorted(p for p in tasks_dir.iterdir() if p.is_dir() and (p / "task.toml").exists())
 
@@ -121,19 +134,21 @@ def _to_gym_row(task_dir: Path, task_cfg: dict) -> dict:
     }
 
 
-def harbor_download(tasks_cache: Path, dataset_name: str, version: str) -> None:
+def harbor_download(tasks_cache: Path, dataset_name: str) -> None:
     """Download tasks via the Harbor CLI, skipping if already present."""
     from shutil import which
 
-    tasks_dir = tasks_cache / f"{dataset_name}"
+    tasks_dir = tasks_cache / _dataset_dir_name(dataset_name)
+    print("Tasks directory:", tasks_dir)
     if tasks_dir.exists() and any(tasks_dir.iterdir()):
         print(f"Tasks already present at {tasks_dir}, skipping download.", flush=True)
         return
     if not which("harbor"):
         sys.exit("`harbor` CLI not found on PATH.\nInstall it or download tasks manually.")
-    print(f"Downloading {dataset_name}@{version} via Harbor CLI...", flush=True)
+    print(f"Downloading {dataset_name} via Harbor CLI...", flush=True)
     proc = subprocess.run(
-        ["harbor", "datasets", "download", f"{dataset_name}@{version}", "--output-dir", str(tasks_cache)], check=False
+        ["harbor", "datasets", "download", dataset_name, "--output-dir", str(tasks_cache)],
+        check=False,
     )
     if proc.returncode != 0:
         sys.exit(f"harbor datasets download failed (exit {proc.returncode})")
@@ -148,14 +163,17 @@ def build_dataset(
 ) -> list[str]:
     task_dirs = _find_task_dirs(tasks_cache, dataset_name)
     if not task_dirs:
-        sys.exit(f"No task directories found under {tasks_cache} after download — check harbor output above.")
+        sys.exit(
+            f"No task directories found under {tasks_cache / _dataset_dir_name(dataset_name)} "
+            "after download — check harbor output above."
+        )
 
     if task_name:
         names = [task_name] if isinstance(task_name, str) else task_name
         task_dirs = [d for d in task_dirs if d.name in names]
         missing = set(names) - {d.name for d in task_dirs}
         if missing:
-            sys.exit(f"Tasks not found under {tasks_cache}: {', '.join(sorted(missing))}")
+            sys.exit(f"Tasks not found under {tasks_cache / dataset_name}: {', '.join(sorted(missing))}")
     elif limit:
         task_dirs = task_dirs[:limit]
 
@@ -225,8 +243,15 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output", type=Path, default=_THIS_DIR / "data" / "terminal_bench.jsonl")
     p.add_argument("--tasks-cache", type=Path, default=DEFAULT_TASKS_CACHE)
-    p.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
-    p.add_argument("--version", default=DEFAULT_DATASET_VERSION)
+    p.add_argument(
+        "--dataset-name",
+        default=DEFAULT_DATASET_NAME,
+        help=(
+            "Full harbor dataset reference: 'name[@version]' or 'org/name[@version]' "
+            "(e.g. 'terminal-bench@2.0', 'terminal-bench/terminal-bench-2-1', "
+            "'terminal-bench/terminal-bench-2-1@6'). Defaults to @head when no version is given."
+        ),
+    )
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--task-name", nargs="+", default=None, metavar="TASK")
     p.add_argument("--sif-dir", type=Path, default=_THIS_DIR / "data" / "sifs")
@@ -236,7 +261,7 @@ def main() -> None:
     args = p.parse_args()
 
     # Download tasks via the Harbor CLI
-    harbor_download(args.tasks_cache, args.dataset_name, args.version)
+    harbor_download(args.tasks_cache, args.dataset_name)
 
     # Build the dataset JSONL
     build_dataset(args.output, args.tasks_cache, args.dataset_name, args.limit, args.task_name)
