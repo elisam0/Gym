@@ -463,22 +463,26 @@ class HermesAgent(SimpleResponsesAPIAgent):
         base_url = self._resolve_model_base_url()
         model_name = str(self.config.model_server.name)
 
+        # Note: the commented fields are associated with the NemoGym Hermes fork.
+        # To use Nemo Relay, we need to use the main Hermes agent instead of the forked one
+        # since the latest is not up to date and doesn't have the Nemo Relay plugin implemented
         agent = AIAgent(
             base_url=base_url,
             api_key="gym",  # pragma: allowlist secret
             model=model_name,
-            use_streaming=False,
-            temperature=self.config.temperature,
-            insert_reasoning=True,
+            # use_streaming=False,
+            # temperature=self.config.temperature,
+            # insert_reasoning=True,
             max_iterations=self.config.max_turns,
             enabled_toolsets=self.config.enabled_toolsets,
             disabled_toolsets=self.config.disabled_toolsets,
             quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            persist_session=False,
-            save_trajectories=False,
+            # skip_context_files=True,
+            # skip_memory=True,
+            # persist_session=False,
+            # save_trajectories=False,
         )
+        agent._disable_streaming = True  # TODO: Remove when uncommenting above
 
         _original_build_api_kwargs = agent._build_api_kwargs
 
