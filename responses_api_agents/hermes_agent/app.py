@@ -14,19 +14,21 @@
 # limitations under the License.
 import asyncio
 import atexit
+import contextlib
 import logging
 import os
 import shutil
 import sys
 import tempfile
 from asyncio import Semaphore
+from pathlib import Path
 from time import time
 from typing import Any, Optional
 from uuid import uuid4
 
 import model_tools  # noqa: F401  # fail-fast if hermes-agent isn't installed  # pyright: ignore[reportMissingImports]
 from fastapi import Request
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from nemo_gym.base_resources_server import BaseRunRequest, BaseVerifyResponse
 from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body, SimpleResponsesAPIAgent
@@ -99,6 +101,170 @@ def _trajectory_to_output_items(messages, n_input):
 LOG = logging.getLogger(__name__)
 
 
+class HermesNemoRelayConfig(BaseModel):
+    enabled: bool = False
+    output_dir: Optional[str] = None
+
+
+class _HermesNemoRelayCapture:
+    def __init__(
+        self,
+        *,
+        relay_dir: Path,
+        mod: Any,
+        model_name: str,
+        input_text: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        self._nemo_relay = mod
+        self.relay_dir = relay_dir
+
+        self.session_id = f"hermes-{uuid4().hex[:8]}"
+        self.atof_path = relay_dir / "hermes.atof.jsonl"
+        self.atif_path = relay_dir / f"hermes-{self.session_id}.atif.json"
+        self._tool_handles: dict[str, Any] = {}
+
+        atof_cfg = mod.AtofExporterConfig()
+        atof_cfg.output_directory = str(relay_dir)
+        atof_cfg.filename = "hermes.atof.jsonl"
+        atof_cfg.mode = mod.AtofExporterMode.Overwrite
+        self._atof_exporter = mod.AtofExporter(atof_cfg)
+        self._atof_subscriber = f"hermes_atof_{uuid4().hex}"
+        self._atof_exporter.register(self._atof_subscriber)
+
+        self._atif_exporter = mod.AtifExporter(
+            self.session_id,
+            "hermes",
+            "0.1.0",
+            model_name=model_name,
+            extra={
+                "gym_agent": "hermes_agent",
+                "instance_id": str(metadata.get("instance_id") or ""),
+            },
+        )
+        self._atif_subscriber = f"hermes_atif_{uuid4().hex}"
+        self._atif_exporter.register(self._atif_subscriber)
+
+        self._closed = False
+        self._agent_handle = mod.scope.push(
+            "hermes",
+            mod.ScopeType.Agent,
+            input={
+                "prompt": input_text,
+                "metadata": {
+                    "instance_id": str(metadata.get("instance_id") or ""),
+                    "dataset_name": str(metadata.get("dataset_name") or ""),
+                },
+            },
+        )
+
+    def step(self, iteration: int, previous_tools: list[str]) -> None:
+        self._nemo_relay.scope.event(
+            "hermes_step",
+            handle=self._agent_handle,
+            data={"iteration": iteration, "previous_tools": previous_tools},
+        )
+
+    def tool_start(self, call_id: str, name: str, args: dict[str, Any]) -> None:
+        self._tool_handles[call_id] = self._nemo_relay.tools.call(name, args, handle=self._agent_handle)
+
+    def tool_complete(self, call_id: str, name: str, args: dict[str, Any], result: Any) -> None:
+        handle = self._tool_handles.pop(call_id, None)
+        if handle is None:
+            handle = self._nemo_relay.tools.call(name, args, handle=self._agent_handle)
+        self._nemo_relay.tools.call_end(handle, result)
+
+    def add_llm_projection(
+        self, messages: list[dict[str, Any]], model: str, system_message: Optional[str] = None
+    ) -> None:
+        # Reconstruct one LLM span per assistant message. Each request carries the
+        # conversation prefix that produced it; each response is shaped as an OpenAI
+        # Chat Completion so the codec extracts finish_reason + token usage (which the
+        # ATIF exporter aggregates into final_metrics).
+        codec = self._nemo_relay.codecs.OpenAIChatCodec()
+        prefix: list[dict[str, Any]] = []
+        if system_message:
+            prefix.append({"role": "system", "content": system_message})
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "assistant":
+                entry = {"role": message.get("role"), "content": message.get("content") or ""}
+                if message.get("tool_call_id"):
+                    entry["tool_call_id"] = message["tool_call_id"]
+                prefix.append(entry)
+                continue
+
+            tool_calls = message.get("tool_calls") or []
+            prompt_tokens = len(message.get("prompt_token_ids") or [])
+            completion_tokens = len(message.get("generation_token_ids") or [])
+            request = self._nemo_relay.LLMRequest(
+                {},
+                {
+                    "messages": list(prefix),
+                    "model": model,
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinking": True, "truncate_history_thinking": False}
+                    },
+                },
+            )
+            handle = self._nemo_relay.llm.call(
+                "hermes_assistant_message", request, handle=self._agent_handle, model_name=model
+            )
+            self._nemo_relay.llm.call_end(
+                handle,
+                {
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": message.get("content") or "",
+                                "tool_calls": tool_calls,
+                            },
+                            "finish_reason": "tool_calls" if tool_calls else "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens,
+                    },
+                },
+                response_codec=codec,
+            )
+            prefix.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls})
+
+    def close(self, output: dict[str, Any]) -> dict[str, str]:
+        self._closed = True
+        for handle in list(self._tool_handles.values()):
+            self._nemo_relay.tools.call_end(handle, {"status": "unclosed"})
+        self._tool_handles.clear()
+
+        self._nemo_relay.scope.pop(self._agent_handle, output=output)
+        self.atif_path.write_text(self._atif_exporter.export_json())
+        self._atif_exporter.deregister(self._atif_subscriber)
+        self._atof_exporter.deregister(self._atof_subscriber)
+        self._atof_exporter.force_flush()
+        self._atof_exporter.shutdown()
+        self._nemo_relay.subscribers.deregister(self._atof_subscriber)
+        self._nemo_relay.subscribers.deregister(self._atif_subscriber)
+
+        return {
+            "nemo_relay_output_dir": str(self.relay_dir),
+            "nemo_relay_atof_path": str(self.atof_path) if self.atof_path.exists() else "",
+            "nemo_relay_atif_path": str(self.atif_path) if self.atif_path.exists() else "",
+        }
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        if not self._closed:
+            self.close({})
+
+
 # if ray close sys.stderr mid-request, write to the original fd
 class _SafeStderrHandler(logging.Handler):
     def emit(self, record):
@@ -162,8 +328,7 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     compression_threshold: float = 0.85
     delegation_max_iterations: int = 50
     checkpoints_enabled: bool = False
-    nemo_relay_enabled: bool = False
-    nemo_relay_output_dir: str = "nemo_relay"
+    nemo_relay: HermesNemoRelayConfig = Field(default_factory=HermesNemoRelayConfig)
 
 
 class HermesAgentRunRequest(BaseRunRequest):
@@ -183,6 +348,7 @@ class HermesAgent(SimpleResponsesAPIAgent):
     # shared SIGTERM dispatcher has been installed on the event loop. See _ensure_sigterm_handler.
     active_agents: set = None
     sigterm_installed: bool = False
+    nemo_relay_mod: Any = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def _ensure_sigterm_handler(self) -> None:
@@ -233,8 +399,6 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 "enabled": self.config.checkpoints_enabled,
             },
         }
-        if self.config.nemo_relay_enabled:
-            config["plugins"] = {"enabled": ["observability/nemo_relay"]}
         return yaml.dump(config, default_flow_style=False)
 
     def model_post_init(self, __context: Any) -> None:
@@ -252,22 +416,12 @@ class HermesAgent(SimpleResponsesAPIAgent):
             _f.write(self._build_config())
         os.environ["HERMES_HOME"] = hermes_home
 
-        # Enable Nemo Relay plugin in Hermes
-        if self.config.nemo_relay_enabled:
-            out = self.config.nemo_relay_output_dir
-            os.environ["HERMES_NEMO_RELAY_ATOF_ENABLED"] = "1"
-            os.environ["HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY"] = out
-            os.environ["HERMES_NEMO_RELAY_ATIF_ENABLED"] = "1"
-            os.environ["HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY"] = out
-
-            # Load the nemo_relay plugin hooks into the process — AIAgent doesn't
-            # call discover_plugins() itself (that's CLI-only), so we trigger it here.
+        if self.config.nemo_relay.enabled:
             try:
-                from hermes_cli.plugins import discover_plugins  # pyright: ignore[reportMissingImports]
-
-                discover_plugins(force=True)
-            except Exception as e:
-                LOG.warning("NemoRelay plugin discovery failed: %s", e)
+                import nemo_relay as _mod  # noqa: PLC0415  # pyright: ignore[reportMissingImports]
+            except ImportError:
+                import nemo_flow as _mod  # type: ignore[no-redef]  # noqa: PLC0415
+            self.nemo_relay_mod = _mod
 
     def _resolve_model_base_url(self) -> str:
         # aiagent builds its own openai client; resolve policy_model url
@@ -277,6 +431,20 @@ class HermesAgent(SimpleResponsesAPIAgent):
         )
         base = self.server_client._build_server_base_url(model_server_cfg)
         return f"{base}/v1"
+
+    def _resolve_nemo_relay_output_dir(self) -> Optional[Path]:
+        if not self.config.nemo_relay.enabled:
+            return None
+        if not self.config.nemo_relay.output_dir:
+            return None
+
+        run_name = f"hermes_{uuid4().hex[:8]}"
+        output_root = Path(self.config.nemo_relay.output_dir).expanduser()
+        if not output_root.is_absolute():
+            output_root = Path.cwd() / output_root
+        relay_dir = output_root / run_name
+        relay_dir.mkdir(parents=True, exist_ok=True)
+        return relay_dir
 
     async def responses(
         self,
@@ -327,62 +495,90 @@ class HermesAgent(SimpleResponsesAPIAgent):
 
         agent._build_api_kwargs = _patched_build_api_kwargs
 
-        # Interrupt the agent cleanly on SIGTERM so run_conversation returns with partial messages
-        # instead of being killed mid-turn (which would leave response.json unwritten). A single
-        # shared dispatcher interrupts every in-flight agent; we just register this one in the set.
-        self._ensure_sigterm_handler()
-        self.active_agents.add(agent)
-
-        try:
-            result = await asyncio.to_thread(
-                agent.run_conversation,
-                user_message,
-                system_message,
-                history,
-            )
-        finally:
-            self.active_agents.discard(agent)
-
-        messages = result.get("messages") or []
-        # aiagent omits system from returned messages
-        n_input = len(history) + 1
-
-        output_items = _trajectory_to_output_items(messages, n_input)
-
-        has_assistant_message = any(
-            getattr(item, "type", None) == "message" and getattr(item, "role", None) == "assistant"
-            for item in output_items
-        )
-        if not has_assistant_message:
-            LOG.warning(
-                "Hermes agent ended without an assistant message. Padding empty assistant message. This should not happen often, investigate: error=%r",
-                result.get("error"),
-            )
-            last_valid = next(
-                (
-                    m
-                    for m in reversed(messages)
-                    if isinstance(m, dict) and m.get("role") == "assistant" and m.get("generation_token_ids")
-                ),
-                None,
-            )
-            pti = last_valid["prompt_token_ids"] if last_valid else [0]
-            gti = last_valid["generation_token_ids"] if last_valid else [0]
-            glp = (last_valid.get("generation_log_probs") if last_valid else None) or [0.0]
-            routed_experts = last_valid.get("routed_experts") if last_valid else None
-            output_items.append(
-                NeMoGymResponseOutputMessageForTraining(
-                    id=f"msg_{uuid4().hex}",
-                    content=[NeMoGymResponseOutputText(text=result.get("error") or "", annotations=[])],
-                    role="assistant",
-                    status="completed",
-                    type="message",
-                    prompt_token_ids=pti,
-                    generation_token_ids=gti,
-                    generation_log_probs=glp,
-                    routed_experts=routed_experts,
+        relay_dir = self._resolve_nemo_relay_output_dir()
+        output_items = []
+        relay_metadata: dict[str, str] = {}
+        with contextlib.ExitStack() as _relay_stack:
+            relay_capture: Optional[_HermesNemoRelayCapture] = None
+            if relay_dir:
+                relay_capture = _relay_stack.enter_context(
+                    _HermesNemoRelayCapture(
+                        relay_dir=relay_dir,
+                        mod=self.nemo_relay_mod,
+                        model_name=model_name,
+                        input_text=user_message,
+                        metadata=dict(body.metadata or {}),
+                    )
                 )
+                agent.step_callback = relay_capture.step
+                agent.tool_start_callback = relay_capture.tool_start
+                agent.tool_complete_callback = relay_capture.tool_complete
+
+            # Interrupt the agent cleanly on SIGTERM so run_conversation returns with partial messages
+            # instead of being killed mid-turn (which would leave response.json unwritten). A single
+            # shared dispatcher interrupts every in-flight agent; we just register this one in the set.
+            self._ensure_sigterm_handler()
+            self.active_agents.add(agent)
+
+            try:
+                result = await asyncio.to_thread(
+                    agent.run_conversation,
+                    user_message,
+                    system_message,
+                    history,
+                )
+            finally:
+                self.active_agents.discard(agent)
+
+            messages = result.get("messages") or []
+            # aiagent omits system from returned messages
+            n_input = len(history) + 1
+
+            output_items = _trajectory_to_output_items(messages, n_input)
+
+            has_assistant_message = any(
+                getattr(item, "type", None) == "message" and getattr(item, "role", None) == "assistant"
+                for item in output_items
             )
+            if not has_assistant_message:
+                LOG.warning(
+                    "Hermes agent ended without an assistant message. Padding empty assistant message. This should not happen often, investigate: error=%r",
+                    result.get("error"),
+                )
+                last_valid = next(
+                    (
+                        m
+                        for m in reversed(messages)
+                        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("generation_token_ids")
+                    ),
+                    None,
+                )
+                pti = last_valid["prompt_token_ids"] if last_valid else [0]
+                gti = last_valid["generation_token_ids"] if last_valid else [0]
+                glp = (last_valid.get("generation_log_probs") if last_valid else None) or [0.0]
+                output_items.append(
+                    NeMoGymResponseOutputMessageForTraining(
+                        id=f"msg_{uuid4().hex}",
+                        content=[NeMoGymResponseOutputText(text=result.get("error") or "", annotations=[])],
+                        role="assistant",
+                        status="completed",
+                        type="message",
+                        prompt_token_ids=pti,
+                        generation_token_ids=gti,
+                        generation_log_probs=glp,
+                    )
+                )
+
+            if relay_capture:
+                relay_capture.add_llm_projection(messages, body.model or model_name, system_message=system_message)
+                relay_metadata = relay_capture.close(
+                    {
+                        "assistant_messages": sum(
+                            1 for item in output_items if getattr(item, "type", None) == "message"
+                        ),
+                        "status": "completed" if has_assistant_message else "interrupted",
+                    }
+                )
 
         return NeMoGymResponse(
             id=f"resp_{uuid4().hex}",
@@ -400,6 +596,7 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 output_tokens_details=NeMoGymResponseOutputTokensDetails(reasoning_tokens=0),
                 total_tokens=0,
             ),
+            metadata=relay_metadata,
         )
 
     async def run(self, request: Request, body: HermesAgentRunRequest) -> HermesAgentVerifyResponse:
