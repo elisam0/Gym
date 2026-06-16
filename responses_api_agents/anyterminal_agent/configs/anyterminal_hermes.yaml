@@ -15,6 +15,8 @@ anyterminal_hermes:
         terminal_timeout: 180
         compression_enabled: true
         compression_threshold: 0.85
+        nemo_relay_enabled: true
+        nemo_relay_output_dir: /trajectories_mount/nemo_relay
 
       # Path to pre-built Apptainer SIF files produced by prepare.py --sif-dir.
       # If omitted, Apptainer will pull docker:// images at runtime (requires internet).

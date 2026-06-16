@@ -21,6 +21,12 @@ echo "Installing hermes-agent ($HERMES_SPEC)"
 "$DEPS_DIR/bin/python3" -m pip install --force-reinstall --no-deps "$HERMES_SPEC"
 "$DEPS_DIR/bin/python3" -m pip install "$HERMES_SPEC"
 
+NEMO_RELAY_SPEC="${NEMO_RELAY_SPEC:-$(sed -n 's/^nemo-relay//p' "$HERMES_REQ" | head -1)}"
+if [ -n "$NEMO_RELAY_SPEC" ]; then
+    echo "Installing nemo-relay$NEMO_RELAY_SPEC"
+    "$DEPS_DIR/bin/python3" -m pip install "nemo-relay$NEMO_RELAY_SPEC"
+fi
+
 "$DEPS_DIR/bin/python3" -c "import model_tools; from run_agent import AIAgent; print('hermes-agent OK')"
 
 echo "hermes_agent deps ready at $DEPS_DIR"

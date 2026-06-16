@@ -162,6 +162,8 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     compression_threshold: float = 0.85
     delegation_max_iterations: int = 50
     checkpoints_enabled: bool = False
+    nemo_relay_enabled: bool = False
+    nemo_relay_output_dir: str = "nemo_relay"
 
 
 class HermesAgentRunRequest(BaseRunRequest):
@@ -231,6 +233,8 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 "enabled": self.config.checkpoints_enabled,
             },
         }
+        if self.config.nemo_relay_enabled:
+            config["plugins"] = {"enabled": ["observability/nemo_relay"]}
         return yaml.dump(config, default_flow_style=False)
 
     def model_post_init(self, __context: Any) -> None:
@@ -247,6 +251,23 @@ class HermesAgent(SimpleResponsesAPIAgent):
         with open(os.path.join(hermes_home, "config.yaml"), "w") as _f:
             _f.write(self._build_config())
         os.environ["HERMES_HOME"] = hermes_home
+
+        # Enable Nemo Relay plugin in Hermes
+        if self.config.nemo_relay_enabled:
+            out = self.config.nemo_relay_output_dir
+            os.environ["HERMES_NEMO_RELAY_ATOF_ENABLED"] = "1"
+            os.environ["HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY"] = out
+            os.environ["HERMES_NEMO_RELAY_ATIF_ENABLED"] = "1"
+            os.environ["HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY"] = out
+
+            # Load the nemo_relay plugin hooks into the process — AIAgent doesn't
+            # call discover_plugins() itself (that's CLI-only), so we trigger it here.
+            try:
+                from hermes_cli.plugins import discover_plugins  # pyright: ignore[reportMissingImports]
+
+                discover_plugins(force=True)
+            except Exception as e:
+                LOG.warning("NemoRelay plugin discovery failed: %s", e)
 
     def _resolve_model_base_url(self) -> str:
         # aiagent builds its own openai client; resolve policy_model url
@@ -274,22 +295,27 @@ class HermesAgent(SimpleResponsesAPIAgent):
         base_url = self._resolve_model_base_url()
         model_name = str(self.config.model_server.name)
 
+        # Note: the commented fields are associated with the NemoGym Hermes fork.
+        # To use Nemo Relay, we need to use the main Hermes agent instead of the forked one
+        # since the latest is not up to date and doesn't have the Nemo Relay plugin implemented
         agent = AIAgent(
             base_url=base_url,
             api_key="gym",  # pragma: allowlist secret
             model=model_name,
-            use_streaming=False,
-            temperature=self.config.temperature,
-            insert_reasoning=True,
+            # use_streaming=False,
+            # temperature=self.config.temperature,
+            # insert_reasoning=True,
             max_iterations=self.config.max_turns,
             enabled_toolsets=self.config.enabled_toolsets,
             disabled_toolsets=self.config.disabled_toolsets,
             quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-            persist_session=False,
-            save_trajectories=False,
+            # skip_context_files=True,
+            # skip_memory=True,
+            # persist_session=False,
+            # save_trajectories=False,
         )
+        agent._disable_streaming = True  # TODO: Remove when uncommenting above
+
         _original_build_api_kwargs = agent._build_api_kwargs
 
         def _patched_build_api_kwargs(api_messages):
