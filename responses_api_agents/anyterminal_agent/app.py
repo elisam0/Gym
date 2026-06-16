@@ -215,7 +215,7 @@ class GymAgentHarnessProcessor(BaseModel):
         agent_dir = PARENT_DIR / "responses_api_agents" / self._agent_key
         deps_dir = self._parent / "deps" / f"anyterminal_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
-        script = agent_dir / f"{self._agent_key}_deps.sh"
+        script = agent_dir / "scripts" / f"{self._agent_key}_deps.sh"
         shared = self._parent / "setup_scripts" / "_portable_python.sh"
         reqs = agent_dir / "requirements.txt"
 
