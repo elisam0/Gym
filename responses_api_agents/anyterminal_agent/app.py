@@ -212,11 +212,12 @@ class GymAgentHarnessProcessor(BaseModel):
 
     def setup(self) -> Path:
         """Install agent deps into a portable prefix (idempotent, hash-keyed)."""
+        agent_dir = PARENT_DIR / "responses_api_agents" / self._agent_key
         deps_dir = self._parent / "deps" / f"anyterminal_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
-        script = self._parent / "setup_scripts" / f"{self._agent_key}_deps.sh"
+        script = agent_dir / f"{self._agent_key}_deps.sh"
         shared = self._parent / "setup_scripts" / "_portable_python.sh"
-        reqs = PARENT_DIR / "responses_api_agents" / self._agent_key / "requirements.txt"
+        reqs = agent_dir / "requirements.txt"
 
         recipe_src = b"".join(p.read_bytes() for p in (script, shared, reqs) if p.exists()) or b"no-script"
         recipe = hashlib.sha256(recipe_src).hexdigest()
@@ -230,7 +231,9 @@ class GymAgentHarnessProcessor(BaseModel):
             return deps_dir
 
         deps_dir.mkdir(parents=True, exist_ok=True)
-        proc = Popen(f"DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}", shell=True)
+        proc = Popen(
+            f"PORTABLE_PYTHON_SH={shared} DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}", shell=True
+        )
         assert proc.wait() == 0, f"Agent deps setup failed ({script})"
         sentinel.write_text(recipe)
         return deps_dir
