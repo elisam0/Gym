@@ -175,7 +175,11 @@ class _HermesNemoRelayCapture:
         self._nemo_relay.tools.call_end(handle, result)
 
     def add_llm_projection(
-        self, messages: list[dict[str, Any]], model: str, system_message: Optional[str] = None
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        system_message: Optional[str] = None,
+        token_data: dict[str, int] = None,
     ) -> None:
         # Reconstruct one LLM span per assistant message. Each request carries the
         # conversation prefix that produced it; each response is shaped as an OpenAI
@@ -196,8 +200,6 @@ class _HermesNemoRelayCapture:
                 continue
 
             tool_calls = message.get("tool_calls") or []
-            prompt_tokens = len(message.get("prompt_token_ids") or [])
-            completion_tokens = len(message.get("generation_token_ids") or [])
             request = self._nemo_relay.LLMRequest(
                 {},
                 {
@@ -226,11 +228,7 @@ class _HermesNemoRelayCapture:
                             "finish_reason": "tool_calls" if tool_calls else "stop",
                         }
                     ],
-                    "usage": {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": prompt_tokens + completion_tokens,
-                    },
+                    "usage": token_data,
                 },
                 response_codec=codec,
             )
@@ -463,26 +461,22 @@ class HermesAgent(SimpleResponsesAPIAgent):
         base_url = self._resolve_model_base_url()
         model_name = str(self.config.model_server.name)
 
-        # Note: the commented fields are associated with the NemoGym Hermes fork.
-        # To use Nemo Relay, we need to use the main Hermes agent instead of the forked one
-        # since the latest is not up to date and doesn't have the Nemo Relay plugin implemented
         agent = AIAgent(
             base_url=base_url,
             api_key="gym",  # pragma: allowlist secret
             model=model_name,
-            # use_streaming=False,
-            # temperature=self.config.temperature,
-            # insert_reasoning=True,
+            use_streaming=False,
+            temperature=self.config.temperature,
+            insert_reasoning=True,
             max_iterations=self.config.max_turns,
             enabled_toolsets=self.config.enabled_toolsets,
             disabled_toolsets=self.config.disabled_toolsets,
             quiet_mode=True,
-            # skip_context_files=True,
-            # skip_memory=True,
-            # persist_session=False,
-            # save_trajectories=False,
+            skip_context_files=True,
+            skip_memory=True,
+            persist_session=False,
+            save_trajectories=False,
         )
-        agent._disable_streaming = True  # TODO: Remove when uncommenting above
 
         _original_build_api_kwargs = agent._build_api_kwargs
 
@@ -570,7 +564,22 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 )
 
             if relay_capture:
-                relay_capture.add_llm_projection(messages, body.model or model_name, system_message=system_message)
+                token_data = {
+                    "prompt_tokens": result.get("prompt_tokens", 0),
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
+                    "prompt_tokens": result.get("prompt_tokens", 0),
+                    "cache_read_tokens": result.get("cache_read_tokens", 0),
+                    "cache_write_tokens": result.get("cache_write_tokens", 0),
+                    "reasoning_tokens": result.get("reasoning_tokens", 0),
+                    "total_tokens": result.get("total_tokens", 0),
+                }
+                relay_capture.add_llm_projection(
+                    messages,
+                    body.model or model_name,
+                    system_message=system_message,
+                    token_data=token_data,
+                )
                 relay_metadata = relay_capture.close(
                     {
                         "assistant_messages": sum(
@@ -590,11 +599,15 @@ class HermesAgent(SimpleResponsesAPIAgent):
             tools=body.tools,
             parallel_tool_calls=body.parallel_tool_calls,
             usage=NeMoGymResponseUsage(
-                input_tokens=0,
-                input_tokens_details=NeMoGymResponseInputTokensDetails(cached_tokens=0),
-                output_tokens=0,
-                output_tokens_details=NeMoGymResponseOutputTokensDetails(reasoning_tokens=0),
-                total_tokens=0,
+                input_tokens=result.get("prompt_tokens") or 0,
+                input_tokens_details=NeMoGymResponseInputTokensDetails(
+                    cached_tokens=result.get("cache_read_tokens") or 0
+                ),
+                output_tokens=result.get("output_tokens") or result.get("completion_tokens") or 0,
+                output_tokens_details=NeMoGymResponseOutputTokensDetails(
+                    reasoning_tokens=result.get("reasoning_tokens") or 0
+                ),
+                total_tokens=result.get("total_tokens") or 0,
             ),
             metadata=relay_metadata,
         )
