@@ -10,6 +10,19 @@ anyterminal runs everything sequentially in one container: agent finishes, then
 directory is mounted read-only so the agent cannot tamper with the tests before
 they run.
 
+## Prerequisites
+
+Every task runs inside an [Apptainer](https://apptainer.org/) (formerly Singularity) container,
+so Apptainer must be installed on each machine that runs rollouts. It is not bundled with Gym.
+
+```bash
+apt-get update && apt-get install -y wget
+cd /tmp
+wget https://github.com/apptainer/apptainer/releases/download/v1.4.2/apptainer_1.4.2_amd64.deb
+apt-get install -y ./apptainer_1.4.2_amd64.deb
+apptainer --version
+```
+
 ## Quickstart
 
 **1. Prepare the dataset** — downloads tasks via Harbor and writes the input JSONL:
