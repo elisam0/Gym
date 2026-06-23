@@ -14,11 +14,11 @@
 """
 Prepare the anyterminal_agent input dataset from Terminal Bench tasks.
 
-    python prepare.py                                 # download tasks + build dataset + build SIFs
+    python prepare.py                                 # download tasks + build dataset (SIFs skipped by default)
     python prepare.py --limit 5                       # first 5 tasks (smoke test)
     python prepare.py --task-name gpt2-codegolf       # single task
-    python prepare.py --no-build-sif                  # skip SIF builds (pull docker:// at runtime)
-    python prepare.py --sif-dir PATH                  # build SIFs into a custom directory
+    python prepare.py --build-sif                     # also build SIFs (requires apptainer)
+    python prepare.py --build-sif --sif-dir PATH      # build SIFs into a custom directory
 
 Prerequisites:
   - Harbor CLI on PATH (for dataset download).
