@@ -19,9 +19,13 @@ anyterminal_hermes:
           enabled: true
           output_dir: /trajectories_mount/nemo_relay
 
-      # Path to pre-built Apptainer SIF files produced by prepare.py --sif-dir.
-      # If omitted, Apptainer will pull docker:// images at runtime (requires internet).
-      tb_sif_dir: null
+      # Container runtime: 'apptainer' (default) or 'enroot'.
+      container_runtime: apptainer
+
+      # Directory of pre-built container images (.sif for apptainer, .sqsh for enroot).
+      # Produced by: prepare.py --build-image [--runtime enroot] [--image-dir PATH]
+      # If omitted, images are pulled from docker:// at runtime (requires internet).
+      tb_image_dir: null
 
       apptainer_memory_limit_mb: 32768
       concurrency: 6

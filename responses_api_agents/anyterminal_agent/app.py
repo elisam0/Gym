@@ -266,9 +266,13 @@ class AnyTerminalAgentConfig(BaseResponsesAPIAgentConfig):
     agent_config_class: str = Field(description="Agent config class name")
     agent_kwargs: Dict[str, Any] = Field(default_factory=dict)
 
-    tb_sif_dir: Optional[str] = Field(
+    tb_image_dir: Optional[str] = Field(
         default=None,
-        description="Directory of pre-built Apptainer SIF files. Falls back to docker:// pull if absent.",
+        description="Directory of pre-built container images (.sif for apptainer, .sqsh for enroot). Falls back to docker:// pull if absent.",
+    )
+    container_runtime: str = Field(
+        default="apptainer",
+        description="Container runtime to use: 'apptainer' or 'enroot'.",
     )
     tb_agent_timeout: int = 1800
     tb_eval_timeout: int = 300
@@ -320,13 +324,13 @@ class RunTerminalAgent(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     config: AnyTerminalInstanceConfig
 
-    async def _start(self, apptainer_cmd: str) -> ActiveContainerProcess:
-        logs_dir = self.config.persistent_dir / "apptainer_logs"
+    async def _start(self, container_cmd: str) -> ActiveContainerProcess:
+        logs_dir = self.config.persistent_dir / "container_logs"
         logs_dir.mkdir(exist_ok=True)
         log_path = logs_dir / f"{self.config.task_name}.log"
         log_file = open(log_path, "w")
         proc = await asyncio.create_subprocess_shell(
-            apptainer_cmd, stdout=log_file, stderr=log_file, start_new_session=True
+            container_cmd, stdout=log_file, stderr=log_file, start_new_session=True
         )
         return ActiveContainerProcess(process=proc, log_file=log_file, log_file_path=log_path)
 
@@ -479,13 +483,14 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
     # Container resolution
 
     def _find_container(self, task_name: str, docker_image: str) -> str:
-        """Return a pre-built SIF path if available, otherwise a docker:// URI for Apptainer to pull."""
-        if self.config.tb_sif_dir:
-            sif_dir = Path(self.config.tb_sif_dir)
+        """Return a pre-built image path if available, otherwise a docker:// URI for runtime pull."""
+        if self.config.tb_image_dir:
+            image_dir = Path(self.config.tb_image_dir)
+            ext = "sqsh" if self.config.container_runtime == "enroot" else "sif"
             for name in [task_name, task_name.replace("-", "_"), task_name.lower()]:
-                sif_path = sif_dir / f"{name}.sif"
-                if sif_path.exists():
-                    return str(sif_path.resolve())
+                img_path = image_dir / f"{name}.{ext}"
+                if img_path.exists():
+                    return str(img_path.resolve())
         if not docker_image.startswith("docker://"):
             return f"docker://{docker_image}"
         return docker_image
@@ -512,14 +517,49 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             cmd = f"ulimit -v {params.apptainer_memory_limit_mb * 1024} && {cmd}"
         return cmd
 
+    @staticmethod
+    def _enroot_exec(
+        params: AnyTerminalInstanceConfig,
+        mounts: list[str],
+        exec_cmd: str,
+        env: str = "",
+        workdir: Optional[str] = None,
+    ) -> str:
+        container_name = f"ngtb_{params.agent_run_id}"
+        mount_flags = " ".join(mounts)
+        if workdir:
+            exec_cmd = f"bash -c {shlex.quote(f'cd {workdir} && {exec_cmd}')}"
+        # If no pre-built .sqsh, import the docker image to a temp file at runtime.
+        if params.container.startswith("docker://"):
+            sqsh_tmp = f"/tmp/{container_name}.sqsh"
+            import_step = f"enroot import --output {sqsh_tmp} {params.container} && "
+            container_ref = sqsh_tmp
+            cleanup_sqsh = f" rm -f {sqsh_tmp};"
+        else:
+            import_step = ""
+            container_ref = params.container
+            cleanup_sqsh = ""
+        cmd = (
+            f"{import_step}"
+            f"enroot create --name {shlex.quote(container_name)} {container_ref} && "
+            f"enroot start --root --rw {env}{mount_flags} {shlex.quote(container_name)} {exec_cmd}; "
+            f"enroot remove --force {shlex.quote(container_name)};{cleanup_sqsh}"
+        )
+        if params.apptainer_memory_limit_mb > 0:
+            cmd = f"ulimit -v {params.apptainer_memory_limit_mb * 1024} && {cmd}"
+        return cmd
+
     def _build_agent_cmd(self, params: AnyTerminalInstanceConfig) -> str:
         # Single container script:
         # 1. Agent runs (tests not visible yet).
         # 2. Agent writes agent_done sentinel → host copies tests into /trajectories_mount/staging/tests/.
         # 3. Script waits for tests_ready sentinel, then runs test.sh from staging.
+        use_enroot = params.container_runtime == "enroot"
+        # _DPKG_FIX is only needed for Apptainer (squashfs→tmpfs cross-fs rename issue).
+        dpkg_fix = "" if use_enroot else _DPKG_FIX
         script = (
             "#!/bin/bash\n"
-            + _DPKG_FIX
+            + dpkg_fix
             + 'date +"%s.%N" > /trajectories_mount/agent_spinup_timestamp\n'
             + f"{GymAgentHarnessProcessor(config=params).get_run_command()}\n"
             + 'date +"%s.%N" > /trajectories_mount/eval_start_timestamp\n'
@@ -549,13 +589,23 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
         script_dir.mkdir(parents=True, exist_ok=True)
         (script_dir / "run_script.sh").write_text(script)
 
-        mounts = [
-            f"--mount type=bind,src={params.persistent_dir},dst=/trajectories_mount",
-            f"--mount type=bind,src={params.nemo_gym_root},dst=/nemo_gym_mount,ro",
-            f"--mount type=bind,src={params.agent_deps_dir},dst=/agent_deps_mount,ro",
-            f"--mount type=bind,src={params.verifier_dir},dst=/logs/verifier",
-            f"--mount type=bind,src={script_dir / 'run_script.sh'},dst=/container_scripts/run_script.sh,ro",
-        ]
+        if use_enroot:
+            # Enroot mount syntax: --mount src:dst (no per-mount ro flag).
+            mounts = [
+                f"--mount {params.persistent_dir}:/trajectories_mount",
+                f"--mount {params.nemo_gym_root}:/nemo_gym_mount",
+                f"--mount {params.agent_deps_dir}:/agent_deps_mount",
+                f"--mount {params.verifier_dir}:/logs/verifier",
+                f"--mount {script_dir / 'run_script.sh'}:/container_scripts/run_script.sh",
+            ]
+        else:
+            mounts = [
+                f"--mount type=bind,src={params.persistent_dir},dst=/trajectories_mount",
+                f"--mount type=bind,src={params.nemo_gym_root},dst=/nemo_gym_mount,ro",
+                f"--mount type=bind,src={params.agent_deps_dir},dst=/agent_deps_mount,ro",
+                f"--mount type=bind,src={params.verifier_dir},dst=/logs/verifier",
+                f"--mount type=bind,src={script_dir / 'run_script.sh'},dst=/container_scripts/run_script.sh,ro",
+            ]
         sampling = {
             k: getattr(params.body, k)
             for k in ("temperature", "top_p", "max_output_tokens")
@@ -569,6 +619,8 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             + f"--env NGTB_SAMPLING={shlex.quote(json.dumps(sampling))} "
         )
         workdir = params.problem_info.get("workdir")
+        if use_enroot:
+            return self._enroot_exec(params, mounts, "bash /container_scripts/run_script.sh", env=env, workdir=workdir)
         return self._apptainer_exec(params, mounts, "bash /container_scripts/run_script.sh", env=env, workdir=workdir)
 
     # Per-instance setup
