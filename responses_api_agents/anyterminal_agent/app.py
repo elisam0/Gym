@@ -533,7 +533,11 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             + "  sleep 1\n"
             + "done\n"
             # Symlink /tests into the writable tmpfs so test.sh's hardcoded /tests/... paths work.
-            + "ln -sf /trajectories_mount/staging/tests /tests\n"
+            # Remove any pre-existing /tests first: if the agent (or image) already created a
+            # /tests directory, `ln -s` would nest the link inside it (/tests/tests) instead of
+            # replacing it, leaving test.sh unreachable at /tests/test.sh.
+            + "rm -rf /tests\n"
+            + "ln -s /trajectories_mount/staging/tests /tests\n"
             # Drop a minimal pytest.ini at / to prevent pytest from picking up Gym's pyproject.toml
             # (host filesystem is overlaid by Apptainer; Gym's config has --pyargs which breaks paths).
             + "printf '[pytest]\\naddopts =\\n' > /pytest.ini\n"
