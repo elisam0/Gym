@@ -13,8 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import atexit
 import logging
 import os
+import shutil
 import sys
 import tempfile
 from asyncio import Semaphore
@@ -244,6 +246,7 @@ class HermesAgent(SimpleResponsesAPIAgent):
 
         # Build config.yaml with config parameters
         hermes_home = tempfile.mkdtemp(prefix="hermes_agent_")
+        atexit.register(shutil.rmtree, hermes_home, True)
         with open(os.path.join(hermes_home, "config.yaml"), "w") as _f:
             _f.write(self._build_config())
         os.environ["HERMES_HOME"] = hermes_home
