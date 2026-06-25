@@ -382,6 +382,11 @@ class RunTerminalAgent(BaseModel):
             staging_dir = cfg.persistent_dir / "staging"
             if staging_dir.exists():
                 shutil.rmtree(staging_dir, ignore_errors=True)
+            # Guarantee the enroot container is torn down on EVERY path. The in-script
+            # `enroot remove` only runs when the container finishes normally; on timeout we SIGKILL
+            # the process group before it gets there, so the fully-unpacked rootfs would otherwise
+            # leak into ENROOT_DATA_PATH and accumulate (a major source of memory/tmpfs growth).
+            await self._cleanup_enroot_container()
 
         if ctr.process.returncode not in (0, None):
             print(
@@ -428,6 +433,26 @@ class RunTerminalAgent(BaseModel):
         )
         update_metrics(cfg.metrics_fpath, metrics.model_dump())
         return resolved
+
+    async def _cleanup_enroot_container(self) -> None:
+        """Remove the enroot container regardless of how the run ended. Idempotent with the in-script
+        `enroot remove` (--force makes a double-remove a no-op); the point is to cover the timeout/kill
+        path where the in-script cleanup never runs, so the unpacked rootfs doesn't leak into
+        ENROOT_DATA_PATH. Only removes the per-run container 'ngtb_<id>' — never touches pre-built
+        .sqsh images. No-op for non-enroot runtimes; never raises."""
+        cfg = self.config
+        if cfg.container_runtime != "enroot":
+            return
+        container_name = f"ngtb_{cfg.agent_run_id}"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f"enroot remove --force {shlex.quote(container_name)}",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=120)
+        except Exception as e:
+            print(f"[{cfg.task_name}] enroot cleanup failed: {e}", flush=True)
 
 
 @ray.remote(scheduling_strategy="SPREAD", runtime_env={"py_executable": sys.executable}, num_cpus=0.1)
