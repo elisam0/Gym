@@ -20,11 +20,6 @@ anyterminal_hermes:
       # If omitted, Apptainer will pull docker:// images at runtime (requires internet).
       tb_sif_dir: null
 
-      # Harbor tasks cache — populated by: harbor datasets download <dataset_name>
-      tb_tasks_cache_dir: ~/.cache/harbor/tasks
-
-      tb_agent_timeout: 1800
-      tb_eval_timeout: 300
       apptainer_memory_limit_mb: 32768
       concurrency: 6
 

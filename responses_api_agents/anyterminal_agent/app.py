@@ -263,10 +263,6 @@ class AnyTerminalAgentConfig(BaseResponsesAPIAgentConfig):
     agent_config_class: str = Field(description="Agent config class name")
     agent_kwargs: Dict[str, Any] = Field(default_factory=dict)
 
-    tb_tasks_cache_dir: str = Field(
-        default="~/.cache/harbor/tasks",
-        description="Directory where Harbor has downloaded Terminal Bench task definitions",
-    )
     tb_sif_dir: Optional[str] = Field(
         default=None,
         description="Directory of pre-built Apptainer SIF files. Falls back to docker:// pull if absent.",
