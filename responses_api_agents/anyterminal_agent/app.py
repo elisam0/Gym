@@ -545,6 +545,13 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
         return cmd
 
     @staticmethod
+    def _enroot_remove_cmd(container_name: str, retries: int = 5, delay: int = 2) -> str:
+        # Slurm's enroot plugin holds bind mounts (/run, /etc/hostname, etc.) briefly after
+        # enroot start exits, causing an immediate enroot remove to fail with EBUSY.
+        quoted = shlex.quote(container_name)
+        return f"for _i in {' '.join(str(i) for i in range(1, retries + 1))}; do enroot remove --force {quoted} && break || sleep {delay}; done"
+
+    @staticmethod
     def _enroot_exec(
         params: AnyTerminalInstanceConfig,
         mounts: list[str],
@@ -570,7 +577,7 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             f"{import_step}"
             f"enroot create --name {shlex.quote(container_name)} {container_ref} && "
             f"enroot start --root --rw {env}{mount_flags} {shlex.quote(container_name)} {exec_cmd}; "
-            f"enroot remove --force {shlex.quote(container_name)};{cleanup_sqsh}"
+            f"{AnyTerminalAgent._enroot_remove_cmd(container_name)};{cleanup_sqsh}"
         )
         if params.apptainer_memory_limit_mb > 0:
             cmd = f"ulimit -v {params.apptainer_memory_limit_mb * 1024} && {cmd}"
