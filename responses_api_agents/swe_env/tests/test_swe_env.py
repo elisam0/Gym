@@ -51,7 +51,7 @@ class _FakeProvider:
 
     name = "fake-swe"
 
-    def __init__(self, *, test_output="", test_rc=0, apply_rc=0, create_error=False, sink=None, **_):
+    def __init__(self, *, test_output="", test_rc=0, apply_rc=0, create_error=False, sink=None, cmd_timeouts=None, **_):
         """Configure the scripted provider's responses.
 
         Args:
@@ -68,6 +68,7 @@ class _FakeProvider:
         self._apply_rc = apply_rc
         self._create_error = create_error
         self._sink = sink
+        self._cmd_timeouts = cmd_timeouts
 
     async def create(self, spec):
         if self._sink is not None:
@@ -77,6 +78,8 @@ class _FakeProvider:
         return SandboxHandle(sandbox_id="fake", provider_name=self.name, raw={"workdir": spec.workdir})
 
     async def exec(self, handle, command, *, cwd=None, env=None, timeout_s=None, user=None):
+        if self._cmd_timeouts is not None:
+            self._cmd_timeouts.append((command, timeout_s))
         if "pytest" in command:
             return SandboxExecResult(stdout=self._test_output, stderr="", return_code=self._test_rc)
         if "git apply" in command:
@@ -255,6 +258,39 @@ def test_verify_task_resolved():
     assert reward_from_report(report) == 1.0
 
 
+def test_verify_task_injects_default_eval_command_timeout():
+    """The in-sandbox eval command must run with an explicit 1800s budget, not None.
+
+    None lets the command inherit the provider's exec default (apptainer 180s vs docker 3600s), so a
+    >180s suite is masked as a timeout on apptainer only. verify_task injects tests_timeout so the
+    budget is provider-independent.
+    """
+    calls: list = []
+    provider = {"fake-swe": {"test_output": _PASS_OUTPUT, "cmd_timeouts": calls}}
+    asyncio.run(verify_task(provider, _task()))
+    eval_timeouts = [t for c, t in calls if "pytest" in c]
+    assert eval_timeouts and eval_timeouts[0] == 1800
+
+
+def test_verify_task_propagates_eval_timeout_to_command():
+    """A caller's ``eval_timeout_s`` reaches the eval command itself (not just the outer guard)."""
+    calls: list = []
+    provider = {"fake-swe": {"test_output": _PASS_OUTPUT, "cmd_timeouts": calls}}
+    asyncio.run(verify_task(provider, _task(), eval_timeout_s=999))
+    eval_timeouts = [t for c, t in calls if "pytest" in c]
+    assert eval_timeouts and eval_timeouts[0] == 999
+
+
+def test_verify_task_explicit_tests_timeout_not_overridden():
+    """An explicit ``tests_timeout`` in task metadata is preserved (verify_task doesn't clobber it)."""
+    calls: list = []
+    provider = {"fake-swe": {"test_output": _PASS_OUTPUT, "cmd_timeouts": calls}}
+    task = _task(metadata={"tests_timeout": 600})
+    asyncio.run(verify_task(provider, task, eval_timeout_s=999))
+    eval_timeouts = [t for c, t in calls if "pytest" in c]
+    assert eval_timeouts and eval_timeouts[0] == 600
+
+
 def test_verify_task_unresolved():
     """``verify_task`` leaves a task unresolved when a required test fails."""
     provider = {"fake-swe": {"test_output": _F2P_FAIL_OUTPUT, "test_rc": 1}}
@@ -270,14 +306,43 @@ def test_verify_task_empty_patch_fast_path():
     assert report.resolved is False
 
 
-def test_verify_task_non_timeout_eval_failure_unmasked():
-    """A non-timeout eval-stage failure is unmasked: resolved=False, reward 0.0.
+def test_verify_task_sandbox_create_error_masked():
+    """A ``SandboxCreateError`` (e.g. a docker image-pull failure) is masked as error_kind='sandbox'.
 
-    Mirrors main's app.py, which catches any eval exception, returns no report file
-    (resolved=False) and leaves eval_timed_out False (so mask_sample stays False).
-    Only a genuine wall-clock eval timeout is masked.
+    An infra failure provisioning the eval sandbox must not depress the resolve rate or leak into
+    the training signal, so it is masked (reward 0.0) rather than reported as an unmasked reward-0.
     """
     report = asyncio.run(verify_task({"fake-swe": {"create_error": True}}, _task()))
+    assert report.error_kind == "sandbox"
+    assert report.resolved is False
+    assert reward_from_report(report) == 0.0
+
+
+def test_verify_task_generic_eval_failure_unmasked():
+    """A non-timeout, non-infra eval-stage exception stays unmasked (resolved=False, reward 0.0).
+
+    Mirrors main's app.py, which catches a generic eval exception, scores reward 0, and leaves the
+    sample in the gradient (error_kind=None) — only timeouts and sandbox-create failures are masked.
+    """
+    from responses_api_agents.swe_env.harness import register_harness
+
+    class _BoomGrade(SweBenchExtHarness):
+        name = "boom-grade-test"
+
+        def grade(self, task, artifacts):
+            """Raise a generic error during grading to exercise the unmasked branch.
+
+            Args:
+                task: The task being graded.
+                artifacts: The eval artifacts (unused).
+
+            Raises:
+                RuntimeError: Always.
+            """
+            raise RuntimeError("boom")
+
+    register_harness(_BoomGrade(), override=True)
+    report = asyncio.run(verify_task({"fake-swe": {"test_output": _PASS_OUTPUT}}, _task(benchmark="boom-grade-test")))
     assert report.error_kind is None
     assert report.resolved is False
     assert reward_from_report(report) == 0.0

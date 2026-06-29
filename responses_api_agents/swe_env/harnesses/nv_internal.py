@@ -33,6 +33,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shlex
 from typing import TYPE_CHECKING, Any
 
 from nemo_gym.sandbox import SandboxResources, SandboxSpec
@@ -118,7 +119,9 @@ class NVInternalHarness(SweTaskHarness):
             A :class:`SandboxSpec` describing the image, workdir, timeouts,
             environment, metadata, resources, and provider options.
         """
-        env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_PAGER": "cat"}
+        # GIT_PAGER=cat avoids pager hangs; not GIT_CONFIG_GLOBAL=/dev/null (older images' git
+        # can't parse it -> the eval's git checkout / test-patch apply fail -> false misses).
+        env = {"GIT_PAGER": "cat"}
         env.update(_parse_dockerfile_env(task))
         return SandboxSpec(
             image=task.image,
@@ -182,7 +185,7 @@ class NVInternalHarness(SweTaskHarness):
         """
         if task.base_commit:
             await env.execute(
-                f"git reset --hard {task.base_commit} && git checkout {task.base_commit}",
+                f"git reset --hard {shlex.quote(task.base_commit)} && git checkout {shlex.quote(task.base_commit)}",
                 cwd=_nv_workdir(task),
             )
 
@@ -229,9 +232,13 @@ class NVInternalHarness(SweTaskHarness):
         # The selected test files are passed positionally.
         test_files = _format_test_files(task.metadata.get("selected_test_files_to_run", []))
         run = await env.execute(
-            f"bash /root/run_script.sh {test_files} > /root/stdout.log 2> /root/stderr.log || true",
+            f"bash /root/run_script.sh {shlex.quote(test_files)} > /root/stdout.log 2> /root/stderr.log || true",
             cwd=workdir,
             is_eval=True,
+            # Provider-independent eval budget (see flat_eval): without it the test run inherits the
+            # provider exec default (apptainer 180s vs docker 3600s), masking long suites as timeouts
+            # on apptainer only. verify_task propagates the caller's eval_timeout_s into tests_timeout.
+            timeout_s=task.metadata.get("tests_timeout", 1800),
         )
         if run.get("error_type") in {"sandbox", "timeout"}:
             return EvalArtifacts(

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from responses_api_agents.anyswe_agent.app import (
     _RUNNER_TEMPLATE,
+    AnySweAgent,
     AnySweAgentConfig,
     GymAgentHarnessProcessor,
     _benchmark_key,
@@ -179,3 +180,37 @@ class TestExampleData:
         for row in rows:
             assert "metadata" in row["responses_create_params"]
             assert "instance_id" in row["responses_create_params"]["metadata"]
+
+
+class _NoSetupAnySweAgent(AnySweAgent):
+    """AnySweAgent with ``model_post_init`` stubbed out (skip deps install + server wiring) so the
+    pure provider-config methods can be unit-tested without a live server."""
+
+    def model_post_init(self, context) -> None:
+        return None
+
+
+class TestApptainerGradingProvider:
+    """The apptainer grading/agent sandbox must be writable AND isolated from the host $HOME.
+
+    apptainer bind-mounts the host home by default, leaking host dotfiles/caches (e.g. the matplotlib
+    font cache) into the eval and flipping image-comparison tests vs docker; --no-mount home prevents
+    that.
+    """
+
+    def _agent(self, **cfg_overrides) -> AnySweAgent:
+        return _NoSetupAnySweAgent.model_construct(config=_config(**cfg_overrides))
+
+    def test_grading_provider_writable_and_host_home_isolated(self) -> None:
+        cfg = self._agent(sandbox_provider={"apptainer": {}})._grading_provider()
+        args = cfg["apptainer"]["create"]["extra_start_args"]
+        assert "--writable-tmpfs" in args
+        assert args[args.index("--no-mount") + 1] == "home"
+
+    def test_grading_provider_preserves_user_start_args(self) -> None:
+        agent = self._agent(sandbox_provider={"apptainer": {"create": {"extra_start_args": ["--nv"]}}})
+        args = agent._grading_provider()["apptainer"]["create"]["extra_start_args"]
+        assert "--nv" in args and "--writable-tmpfs" in args and "--no-mount" in args
+
+    def test_non_apptainer_grading_provider_unchanged(self) -> None:
+        assert self._agent(sandbox_provider={"docker": {}})._grading_provider() == {"docker": {}}

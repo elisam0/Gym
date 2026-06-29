@@ -36,7 +36,7 @@ from typing import Any
 # Importing this package registers the swe_env harnesses; the docker/apptainer
 # providers are built into nemo_gym.sandbox and resolve lazily (no import needed).
 import responses_api_agents.swe_env.harnesses  # noqa: F401
-from nemo_gym.sandbox import SandboxProvider
+from nemo_gym.sandbox import SandboxCreateError, SandboxProvider
 from responses_api_agents.swe_env.harness import (
     GraderDependencyError,
     SweEvalReport,
@@ -98,9 +98,10 @@ async def verify_task(
             seconds; falls back to the task metadata or a default.
 
     Returns:
-        SweEvalReport: The grading outcome, with ``error_kind="eval_timeout"`` set
-            only on a genuine wall-clock eval timeout; non-timeout eval-stage
-            failures are reported unmasked (``resolved=False``, ``error_kind=None``).
+        SweEvalReport: The grading outcome. ``error_kind="eval_timeout"`` on a genuine
+            wall-clock eval timeout and ``error_kind="sandbox"`` on a sandbox-create /
+            image-pull failure (both masked); other non-timeout eval-stage failures are
+            reported unmasked (``resolved=False``, ``error_kind=None``).
 
     Raises:
         ProviderCapabilityError: If the task's harness does not support the provider.
@@ -129,6 +130,14 @@ async def verify_task(
 
     spec = harness.build_spec(task)
     timeout = eval_timeout_s if eval_timeout_s is not None else float(task.metadata.get("eval_timeout_s", 1800))
+    # Give the in-sandbox eval command the same budget as the overall sequence. The flat harness runs
+    # the test command with task.metadata['tests_timeout']; if a caller passed an eval_timeout_s but no
+    # tests_timeout, propagate it so the configured budget reaches the command itself instead of
+    # falling back to the provider's exec default (apptainer 180s vs docker 3600s) -- otherwise a long
+    # suite is masked as a timeout on apptainer only, regardless of eval_timeout_s. The outer wait_for
+    # below stays the hard cap.
+    if "tests_timeout" not in task.metadata:
+        task = dataclasses.replace(task, metadata={**task.metadata, "tests_timeout": timeout})
     # Stamp a TTL so backends that honor it (opensandbox) self-expire an eval sandbox
     # orphaned by a hard crash. docker ignores ttl_s; its finally-teardown covers it.
     if spec.ttl_s is None:
@@ -159,6 +168,17 @@ async def verify_task(
             patch_exists=bool(task.model_patch),
             error_kind="eval_timeout",
             tests_status={"timeout_s": timeout},
+        )
+    except SandboxCreateError as exc:
+        # Infra failure provisioning the eval sandbox (e.g. a docker image-pull failure on the
+        # pull-on-demand path). Mask it as a typed error_kind so an infra hiccup doesn't depress
+        # the resolve rate or leak into the training signal — consistent with the harnesses'
+        # sandbox/eval_error masking — rather than degrading to an unmasked reward-0.
+        return SweEvalReport(
+            instance_id=task.instance_id,
+            patch_exists=bool(task.model_patch),
+            error_kind="sandbox",
+            tests_status={"sandbox_create_error": repr(exc)},
         )
     except Exception as exc:  # non-timeout eval-stage failure -> unmasked reward 0
         # A non-timeout eval-stage crash is NOT masked: main's app.py catches any eval

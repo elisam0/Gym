@@ -447,7 +447,12 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         dataset_dir = persistent_dir / "instance_datasets"
         dataset_dir.mkdir(parents=True, exist_ok=True)
         instance_dataset_path = dataset_dir / f"{agent_run_id}.jsonl"
-        instance_dict = json.loads(problem_info["instance_dict"])
+        # Accept instance_dict as a JSON string or an already-parsed dict (mirrors _build_swetask),
+        # so a dict-valued row doesn't raise TypeError and mask the whole run with an opaque error.
+        raw_instance_dict = problem_info["instance_dict"]
+        instance_dict = (
+            json.loads(raw_instance_dict) if isinstance(raw_instance_dict, str) else dict(raw_instance_dict)
+        )
         instance_dict.setdefault("repo_name", instance_dict.get("repo", ""))
         instance_dataset_path.write_text(json.dumps(instance_dict) + "\n")
 
@@ -507,6 +512,10 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             start_args = list(create_cfg.get("extra_start_args") or [])
             if "--writable-tmpfs" not in start_args:
                 start_args.append("--writable-tmpfs")
+            # Isolate from the host $HOME (same reason as the grading sandbox in ``_grading_provider``):
+            # apptainer's default host-home bind leaks host dotfiles/caches into the agent run.
+            if "--no-mount" not in start_args:
+                start_args += ["--no-mount", "home"]
             create_cfg["extra_start_args"] = start_args
             appt["create"] = create_cfg
             return ApptainerProvider(**appt)
@@ -544,6 +553,13 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         start_args = list(create_cfg.get("extra_start_args") or [])
         if "--writable-tmpfs" not in start_args:
             start_args.append("--writable-tmpfs")
+        # Don't bind-mount the host $HOME into the grading sandbox. apptainer mounts it by default,
+        # leaking host dotfiles/caches into the eval (e.g. ~/.config/matplotlib + the host font cache),
+        # which changes test outcomes vs docker -- matplotlib image-comparison tests fail on the host
+        # fonts even for the gold patch. (Scoped to --no-mount home: --cleanenv / --no-mount tmp,bind-paths
+        # are too aggressive and break the eval's conda/PATH env, producing an empty test log.)
+        if "--no-mount" not in start_args:
+            start_args += ["--no-mount", "home"]
         create_cfg["extra_start_args"] = start_args
         appt["create"] = create_cfg
         return {"apptainer": appt}

@@ -31,6 +31,7 @@ patches are applied best-effort and grading is on the tests only.
 
 from __future__ import annotations
 
+import shlex
 from typing import TYPE_CHECKING
 
 from nemo_gym.sandbox import SandboxResources, SandboxSpec
@@ -84,7 +85,9 @@ class SweBenchExtHarness(SweTaskHarness):
             workdir=task.repo_workdir,
             ttl_s=task.metadata.get("ttl_s", 1800),
             ready_timeout_s=task.metadata.get("ready_timeout_s", 600),
-            env={"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_PAGER": "cat"},
+            # GIT_PAGER=cat avoids pager hangs; not GIT_CONFIG_GLOBAL=/dev/null (older images' git
+            # can't parse it -> the eval's git checkout / test-patch apply fail -> false misses).
+            env={"GIT_PAGER": "cat"},
             metadata={
                 "instance_id": task.instance_id[:63],
                 "benchmark": task.benchmark,
@@ -148,7 +151,7 @@ class SweBenchExtHarness(SweTaskHarness):
         """
         if task.base_commit:
             workdir = await self._resolve_repo_workdir(env, task)
-            await env.execute(f"git reset --hard {task.base_commit}", cwd=workdir)
+            await env.execute(f"git reset --hard {shlex.quote(task.base_commit)}", cwd=workdir)
 
     async def run_eval(self, env: "AsyncSweEnvironment", task: SweTask) -> EvalArtifacts:
         """Apply patches, run the test command, and capture the evaluation output.
@@ -200,7 +203,15 @@ class SweBenchExtHarness(SweTaskHarness):
         base_command = task.test_command
         test_cmd = get_test_command_with_output(base_command, framework)
         result_file = (get_framework_config(framework, base_command) or {}).get("result_file")
-        result = await env.execute(self._wrap_eval_command(test_cmd, result_file), cwd=workdir, is_eval=True)
+        result = await env.execute(
+            self._wrap_eval_command(test_cmd, result_file),
+            cwd=workdir,
+            is_eval=True,
+            # Provider-independent eval budget (see flat_eval): without it the command inherits the
+            # provider exec default (apptainer 180s vs docker 3600s), masking long suites as timeouts
+            # on apptainer only. verify_task propagates the caller's eval_timeout_s into tests_timeout.
+            timeout_s=task.metadata.get("tests_timeout", 1800),
+        )
         return EvalArtifacts(
             test_output=result["output"],
             return_code=result["returncode"],

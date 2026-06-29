@@ -21,7 +21,9 @@ NOTE: the apptainer-only nested ``run_local_evaluation`` path (which produced r2
 ``report.json`` in-container) was removed when PR #1694 took ownership of the apptainer
 provider. Re-wiring r2e-gym's nested grading + ``.sif``/mounts onto #1694's provider is tracked
 for a follow-up PR (see APPTAINER_PR3_TRACKER.md); until then r2e-gym grades flat (it needs an
-``eval_script`` in task metadata, else the flat grader masks the sample as an eval error).
+``eval_script`` in task metadata, else the flat grader records an **unmasked** ``resolved=False``
+— reward 0, kept in the gradient — not an eval-error mask; see
+``test_r2egym.py::test_run_eval_missing_eval_script_is_unmasked_unresolved``).
 """
 
 from __future__ import annotations
@@ -65,7 +67,9 @@ class R2EGymHarness(SweTaskHarness):
             workdir=task.repo_workdir,
             ttl_s=task.metadata.get("ttl_s", 1800),
             ready_timeout_s=task.metadata.get("ready_timeout_s", 600),
-            env={"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_PAGER": "cat"},
+            # GIT_PAGER=cat avoids pager hangs; not GIT_CONFIG_GLOBAL=/dev/null (older images' git
+            # can't parse it -> the eval's git checkout / test-patch apply fail -> false misses).
+            env={"GIT_PAGER": "cat"},
             metadata={
                 "instance_id": task.instance_id[:63],
                 "benchmark": task.benchmark,

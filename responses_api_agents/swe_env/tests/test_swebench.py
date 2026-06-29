@@ -232,3 +232,26 @@ def test_grade_fails_loud_when_swebench_unavailable(monkeypatch):
     artifacts = EvalArtifacts(test_output=_PASSING_LOG, return_code=0, raw={})
     with pytest.raises(GraderDependencyError):
         harness.grade(task, artifacts)
+
+
+def test_flat_eval_script_forces_pytest_addopts(monkeypatch):
+    """The flat eval script forces ``PYTEST_ADDOPTS=-rA`` so pytest prints per-test result lines.
+
+    swebench's eval command for some families (sphinx via tox, several sklearn) invokes pytest
+    without -rA; passing tests then show only as dots and the host-side parser sees zero passes.
+    The injected -rA makes them visible, while preserving swebench's eval script verbatim.
+    """
+
+    class _Spec:
+        repo = "sphinx-doc/sphinx"
+        eval_script = "tox --current-env -epy39 -v -- tests/test_x.py\n"
+
+    monkeypatch.setattr(
+        "swebench.harness.test_spec.test_spec.make_test_spec",
+        lambda instance, namespace="swebench": _Spec(),
+    )
+    harness = SweBenchHarness("swe-bench")
+    task = _task(metadata={"instance_dict": {"instance_id": "repo__inst-1", "repo": "sphinx-doc/sphinx"}})
+    script = harness._flat_eval_script(task)
+    assert 'PYTEST_ADDOPTS="-rA' in script
+    assert "tox --current-env -epy39" in script  # swebench's eval script preserved verbatim

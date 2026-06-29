@@ -96,7 +96,11 @@ class SweBenchHarness(SweTaskHarness):
             workdir=task.repo_workdir,
             ttl_s=task.metadata.get("ttl_s", 1800),
             ready_timeout_s=task.metadata.get("ready_timeout_s", 600),
-            env={"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_PAGER": "cat"},
+            # GIT_PAGER=cat avoids pager hangs. Do NOT set GIT_CONFIG_GLOBAL=/dev/null: older
+            # instance images' git cannot parse /dev/null ("bad config line 1") and the eval
+            # script's git checkout / test-patch apply then fail, leaving required tests un-run
+            # (false misses). swebench's own nested eval doesn't null it either.
+            env={"GIT_PAGER": "cat"},
             metadata={
                 "instance_id": task.instance_id[:63],
                 "benchmark": task.benchmark,
@@ -151,7 +155,15 @@ class SweBenchHarness(SweTaskHarness):
             "patch --batch --fuzz=5 -p1 -i /root/patch.diff || "
             "echo 'NEMO_GYM_PATCH_APPLY_FAILED')\n"
         )
-        return apply_model + spec.eval_script
+        # Force pytest to print a per-test result line for EVERY test (-rA), not just failures.
+        # swebench's per-repo eval command for some families (e.g. sphinx via tox, several sklearn)
+        # invokes pytest without -rA, so passing tests show only as dots — and the host-side parser
+        # (``parse_log_pytest_v2``, which keys off ``PASSED <nodeid>`` lines) then sees zero passes
+        # and marks the instance unresolved even for the gold patch. -rA makes those passes visible
+        # to the flat grader. Non-pytest families (e.g. django's runner) ignore PYTEST_ADDOPTS, so
+        # this is a safe no-op for them; any addopts the eval script itself sets are preserved.
+        pytest_addopts = 'export PYTEST_ADDOPTS="-rA ${PYTEST_ADDOPTS:-}"\n'
+        return pytest_addopts + apply_model + spec.eval_script
 
     # --- server-private grading ----------------------------------------------
 
