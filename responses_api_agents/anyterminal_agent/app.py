@@ -146,7 +146,9 @@ import asyncio, json, os, sys
 from pathlib import Path
 
 sys.path.insert(0, "/nemo_gym_mount")
-os.environ["PATH"] = "/agent_deps_mount/bin:" + os.environ.get("PATH", "")
+# Append (not prepend) agent-deps bin so the task's own python/pip win — else the agent's
+# builds/installs land in a Python the verifier can't see. Harness CLIs stay findable as a fallback.
+os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + "/agent_deps_mount/bin"
 
 MODEL_URL    = os.environ.get("NGTB_MODEL_URL", "")
 MODEL_NAME   = os.environ["NGTB_MODEL_NAME"]
