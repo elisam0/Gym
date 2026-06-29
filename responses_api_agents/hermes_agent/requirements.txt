@@ -1,4 +1,3 @@
 -e nemo-gym[dev] @ ../../
-# hermes-agent @ git+https://github.com/cmunley1/hermes-agent@26bb847a
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent@main
+hermes-agent @ git+https://github.com/cmunley1/hermes-agent@26bb847a
 nemo-relay==0.3
