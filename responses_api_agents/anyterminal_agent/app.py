@@ -14,15 +14,11 @@
 import asyncio
 import hashlib
 import json
-import os
-import shlex
 import shutil
-import signal
 import sys
 import time
 import uuid
 from asyncio import Semaphore
-from asyncio.subprocess import Process
 from pathlib import Path
 from subprocess import Popen
 from traceback import format_exc
@@ -37,6 +33,22 @@ from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body,
 from nemo_gym.config_types import ModelServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
+from nemo_gym.sandbox import AsyncSandbox, SandboxSpec
+from nemo_gym.sandbox.providers.apptainer import ApptainerProvider
+from nemo_gym.sandbox.providers.docker import DockerSandboxProvider
+
+
+def _format_container(container_formatter: str | list[str], task_name: str, docker_image: str) -> str:
+    """Resolve the pullable/local image reference for a task from a formatter template."""
+
+    fmt = container_formatter[0] if isinstance(container_formatter, list) else container_formatter
+    fmt = fmt or "docker://{docker_image}"
+    docker_image = docker_image[len("docker://") :] if docker_image.startswith("docker://") else docker_image
+    if fmt.endswith(".sif") or fmt.startswith(("/", ".")):
+        return fmt.format(task_name=task_name, docker_image=docker_image)
+    if fmt.startswith("docker://"):
+        fmt = fmt[len("docker://") :]
+    return f"docker://{fmt.format(task_name=task_name, docker_image=docker_image)}"
 
 
 def _read_task_meta(task_dir: Path) -> dict:
@@ -80,17 +92,6 @@ def _instruction_from_input(body: NeMoGymResponseCreateParamsNonStreaming) -> st
     return "\n".join(parts)
 
 
-### Container process handle
-
-
-class ActiveContainerProcess(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    process: Process
-    log_file: Any
-    log_file_path: Path
-
-
 ### Metrics
 
 
@@ -122,19 +123,6 @@ def _safe_config_json(params: "AnyTerminalInstanceConfig", indent: Optional[int]
     }
     return json.dumps(d, indent=indent)
 
-
-# Recreates /etc/dpkg in the writable tmpfs overlay so dpkg's rename() calls
-# don't cross filesystem boundaries (squashfs base → tmpfs overlay = EXDEV).
-_DPKG_FIX = """\
-if [ -d /etc/dpkg ]; then
-    cp -a /etc/dpkg /tmp/_dpkg_backup
-    rm -rf /etc/dpkg
-    cp -a /tmp/_dpkg_backup /etc/dpkg
-    mkdir -p /etc/dpkg/dpkg.cfg.d
-    printf 'force-overwrite\\nforce-overwrite-dir\\nforce-unsafe-io\\n' \
-        > /etc/dpkg/dpkg.cfg.d/singularity-compat
-fi
-"""
 
 ### Agent runner template
 # Injected into the task container; imports any agent class and calls responses().
@@ -252,9 +240,7 @@ class GymAgentHarnessProcessor(BaseModel):
             agent_class_lower=cfg.agent_server_class.lower(),
         )
         (cfg.persistent_dir / "agent_runner.py").write_text(runner)
-        return (
-            f"timeout {cfg.tb_agent_timeout} /agent_deps_mount/bin/python /trajectories_mount/agent_runner.py || true"
-        )
+        return "/agent_deps_mount/bin/python /trajectories_mount/agent_runner.py"
 
 
 ### Configuration
@@ -268,17 +254,16 @@ class AnyTerminalAgentConfig(BaseResponsesAPIAgentConfig):
     agent_config_class: str = Field(description="Agent config class name")
     agent_kwargs: Dict[str, Any] = Field(default_factory=dict)
 
-    tb_image_dir: Optional[str] = Field(
-        default=None,
-        description="Directory of pre-built container images (.sif for apptainer, .sqsh for enroot). Falls back to docker:// pull if absent.",
+    container_formatter: str | list[str] = Field(
+        default="docker://{docker_image}",
+        description="Template for the task's image reference: use as a path if it ends with .sif or starts with / or ., else as a docker:// URI.",
     )
-    container_runtime: str = Field(
-        default="apptainer",
-        description="Container runtime to use: 'apptainer' or 'enroot'.",
-    )
+    sandbox_provider: Dict[str, Any] = Field(default_factory=lambda: {"docker": {}})
+    # Docker network for the agent container. "host" lets the in-container agent reach a
+    # model server on host loopback; None uses the docker default (e.g. for a remote server).
+    docker_network: Optional[str] = "host"
     tb_agent_timeout: int = 1800
     tb_eval_timeout: int = 300
-    apptainer_memory_limit_mb: int = 32768  # fallback container memory cap when a task omits memory_mb
     agent_overhead_mb: int = 2048  # extra container memory on top of the task's memory_mb for the
     # in-container agent harness
     concurrency: int = 256
@@ -317,40 +302,134 @@ class AnyTerminalVerifyResponse(TerminalBenchMetrics, BaseVerifyResponse):
     instance_config: Dict[str, Any]
 
 
+### Sandbox provider selection
+
+
+def _apt_root_sandbox(cfg: AnyTerminalInstanceConfig) -> str:
+    # apt drops root to _apt before fetching; fakeroot's single-ID userns can't setgid to it.
+    if next(iter(cfg.sandbox_provider), "docker") != "apptainer":
+        return ""
+    return (
+        "mkdir -p /etc/apt/apt.conf.d && printf 'APT::Sandbox::User \"root\";\\n' "
+        "> /etc/apt/apt.conf.d/99nemo-gym-apt-root; "
+    )
+
+
+def _build_provider(params: AnyTerminalInstanceConfig):
+    """Build a sandbox provider with the per-instance mounts the run needs.
+
+    The deps prefix, the NeMo Gym tree, the run dir, and the verifier dir are bind-mounted at
+    fixed paths the agent runner and test.sh expect. For apptainer the mounts are applied as
+    ``--bind`` (via ``exec.default_binds``); ``--writable-tmpfs`` makes the task's working
+    directory editable (the apptainer provider swaps it for a disk-backed overlay), and
+    ``--no-mount home`` keeps host dotfiles/caches out of the run.
+    """
+    name = next(iter(params.sandbox_provider), "docker")
+    if name == "apptainer":
+        appt = {
+            k: v
+            for k, v in (params.sandbox_provider.get("apptainer") or {}).items()
+            if k in ("exec", "create", "probe")
+        }
+        exec_cfg = dict(appt.get("exec") or {})
+        exec_cfg["default_binds"] = list(exec_cfg.get("default_binds") or []) + [
+            f"{params.persistent_dir}:/trajectories_mount",
+            f"{params.nemo_gym_root}:/nemo_gym_mount:ro",
+            f"{params.agent_deps_dir}:/agent_deps_mount:ro",
+            f"{params.verifier_dir}:/logs/verifier",
+        ]
+        exec_cfg["extra_exec_args"] = list(exec_cfg.get("extra_exec_args") or []) + [
+            "--cleanenv",
+            "--pid",
+            "--no-mount",
+            "tmp,bind-paths",
+        ]
+        appt["exec"] = exec_cfg
+
+        create_cfg = dict(appt.get("create") or {})
+        start_args = list(create_cfg.get("extra_start_args") or [])
+        if "--writable-tmpfs" not in start_args:
+            start_args.append("--writable-tmpfs")
+        if "--no-mount" not in start_args:
+            start_args += ["--no-mount", "home"]
+        create_cfg["extra_start_args"] = start_args
+        appt["create"] = create_cfg
+        return ApptainerProvider(**appt)
+    if name != "docker":
+        return params.sandbox_provider
+    return DockerSandboxProvider(
+        network=params.docker_network,
+        run_args=[
+            "-v",
+            f"{params.persistent_dir}:/trajectories_mount",
+            "-v",
+            f"{params.nemo_gym_root}:/nemo_gym_mount:ro",
+            "-v",
+            f"{params.agent_deps_dir}:/agent_deps_mount:ro",
+            "-v",
+            f"{params.verifier_dir}:/logs/verifier",
+        ],
+    )
+
+
 ### Container lifecycle
 
 
 class RunTerminalAgent(BaseModel):
-    """Single container: agent runs, signals done, host stages tests, container runs test.sh."""
+    """Single sandbox: agent runs, host stages tests, sandbox runs test.sh."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     config: AnyTerminalInstanceConfig
 
-    async def _start(self, container_cmd: str) -> ActiveContainerProcess:
-        logs_dir = self.config.persistent_dir / "container_logs"
-        logs_dir.mkdir(exist_ok=True)
-        log_path = logs_dir / f"{self.config.task_name}.log"
-        log_file = open(log_path, "w")
-        proc = await asyncio.create_subprocess_shell(
-            container_cmd, stdout=log_file, stderr=log_file, start_new_session=True
+    def _agent_env(self, cfg: AnyTerminalInstanceConfig) -> Dict[str, str]:
+        sampling = {
+            k: getattr(cfg.body, k)
+            for k in ("temperature", "top_p", "max_output_tokens")
+            if getattr(cfg.body, k, None) is not None
+        }
+        model_name = cfg.agent_kwargs.get("model") or cfg.body.model or "model"
+        env = {
+            "NGTB_MODEL_NAME": model_name,
+            "NGTB_AGENT_KWARGS": json.dumps(cfg.agent_kwargs),
+            "NGTB_SAMPLING": json.dumps(sampling),
+        }
+        if cfg.model_server_url:
+            env["NGTB_MODEL_URL"] = cfg.model_server_url
+        return env
+
+    async def _run_agent(self, sandbox: AsyncSandbox, cfg: AnyTerminalInstanceConfig) -> tuple[float, bool]:
+        t0 = time.time()
+        result = await sandbox.exec(
+            _apt_root_sandbox(cfg) + (cfg.agent_command_str or ""),
+            timeout_s=cfg.tb_agent_timeout,
+            user="root",
+            env=self._agent_env(cfg),
         )
-        return ActiveContainerProcess(process=proc, log_file=log_file, log_file_path=log_path)
+        if result.return_code != 0:
+            print(f"[{cfg.task_name}] agent exit {result.return_code}: {(result.stderr or '')[-2000:]}", flush=True)
+        return time.time() - t0, result.error_type == "timeout"
 
     async def _stage_tests(self, cfg: AnyTerminalInstanceConfig) -> None:
-        """Copy test files into the staging dir once the agent signals it is done."""
-        agent_done = cfg.persistent_dir / "agent_done"
-        tests_ready = cfg.persistent_dir / "tests_ready"
-        staging_tests = cfg.persistent_dir / "staging" / "tests"
-
-        # Poll until agent writes the sentinel or the process dies.
-        while not agent_done.exists():
-            await asyncio.sleep(1)
-
+        """Copy the task's test files into the staging dir, visible to the sandbox at /tests."""
         src = Path(cfg.problem_info["task_dir"]) / "tests"
+        staging_tests = cfg.persistent_dir / "staging" / "tests"
         if staging_tests.exists():
             shutil.rmtree(staging_tests)
         shutil.copytree(src, staging_tests)
-        tests_ready.touch()
+
+    async def _run_eval(self, sandbox: AsyncSandbox, cfg: AnyTerminalInstanceConfig) -> tuple[float, bool]:
+        t0 = time.time()
+        test_cmd = (
+            "rm -rf /tests && ln -s /trajectories_mount/staging/tests /tests && "
+            # A minimal pytest.ini at / stops pytest from picking up Gym's pyproject.toml
+            # (whose --pyargs breaks paths inside the sandbox).
+            "printf '[pytest]\\naddopts =\\n' > /pytest.ini && "
+            "mkdir -p /logs/verifier && bash /tests/test.sh > /logs/verifier/test-stdout.txt 2>&1"
+        )
+        result = await sandbox.exec(_apt_root_sandbox(cfg) + test_cmd, timeout_s=cfg.tb_eval_timeout, user="root")
+        if result.return_code != 0:
+            print(f"[{cfg.task_name}] eval exit {result.return_code}: {(result.stderr or '')[-2000:]}", flush=True)
+        return time.time() - t0, result.error_type == "timeout"
 
     async def process_single_datapoint(self) -> bool:
         cfg = self.config
@@ -358,60 +437,24 @@ class RunTerminalAgent(BaseModel):
         (cfg.persistent_dir / "staging").mkdir(parents=True, exist_ok=True)
         t0 = time.time()
 
-        ctr = await self._start(cfg.agent_command_str)
-
-        # Stage tests concurrently while the container is running.
-        staging_task = asyncio.create_task(self._stage_tests(cfg))
-        total_timeout = cfg.tb_agent_timeout + cfg.tb_eval_timeout + 120
-        container_timed_out = False
+        sandbox = AsyncSandbox(
+            _build_provider(cfg), SandboxSpec(image=cfg.container, workdir=cfg.problem_info.get("workdir"))
+        )
+        agent_timed_out = container_timed_out = False
+        agent_run_time = eval_run_time = None
         try:
-            await asyncio.wait_for(ctr.process.communicate(), timeout=total_timeout)
-        except asyncio.TimeoutError:
-            container_timed_out = True
-            if ctr.process.returncode is None:
-                try:
-                    os.killpg(os.getpgid(ctr.process.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await ctr.process.wait()
-            print(f"[{cfg.task_name}] container timed out after {total_timeout}s", flush=True)
+            await sandbox.start()
+            agent_run_time, agent_timed_out = await self._run_agent(sandbox, cfg)
+            await self._stage_tests(cfg)
+            eval_run_time, container_timed_out = await self._run_eval(sandbox, cfg)
         except Exception as e:
-            print(f"[{cfg.task_name}] container error: {e}", flush=True)
+            print(f"[{cfg.task_name}] sandbox run failed: {e}", flush=True)
         finally:
-            ctr.log_file.close()
-            staging_task.cancel()
-            # Clean up staging dir — tests are already run, no need to keep the copy.
-            staging_dir = cfg.persistent_dir / "staging"
-            if staging_dir.exists():
-                shutil.rmtree(staging_dir, ignore_errors=True)
-            # Always clean up enroot containers to prevent ENROOT_DATA_PATH leaks.
-            await self._cleanup_enroot_container()
-
-        if ctr.process.returncode not in (0, None):
-            print(
-                f"[{cfg.task_name}] container exit {ctr.process.returncode}: "
-                f"{ctr.log_file_path.read_text(errors='replace')[-2000:]}",
-                flush=True,
-            )
+            await sandbox.stop()
+            shutil.rmtree(cfg.persistent_dir / "staging", ignore_errors=True)
 
         total_run_time = time.time() - t0
 
-        # Reconstruct per-phase timing from timestamps written by the script.
-        agent_run_time, eval_run_time, agent_timed_out = None, None, False
-        spinup_path = cfg.persistent_dir / "agent_spinup_timestamp"
-        eval_start_path = cfg.persistent_dir / "eval_start_timestamp"
-        if spinup_path.exists():
-            try:
-                spinup_t = float(spinup_path.read_text().strip())
-                if eval_start_path.exists():
-                    eval_start_t = float(eval_start_path.read_text().strip())
-                    agent_run_time = eval_start_t - spinup_t
-                    eval_run_time = max(0.0, total_run_time - agent_run_time)
-                    agent_timed_out = agent_run_time >= cfg.tb_agent_timeout - 5
-            except (ValueError, OSError):
-                pass
-
-        # Read reward written by test.sh.
         reward_path = cfg.verifier_dir / "reward.txt"
         resolved = False
         if reward_path.exists():
@@ -433,24 +476,6 @@ class RunTerminalAgent(BaseModel):
         update_metrics(cfg.metrics_fpath, metrics.model_dump())
         return resolved
 
-    async def _cleanup_enroot_container(self) -> None:
-        """Remove the per-run enroot container ('ngtb_<id>') after run, even on timeout/kill.
-        Safe to call multiple times. No-op for non-enroot."""
-
-        cfg = self.config
-        if cfg.container_runtime != "enroot":
-            return
-        container_name = f"ngtb_{cfg.agent_run_id}"
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                f"enroot remove --force {shlex.quote(container_name)}",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=120)
-        except Exception as e:
-            print(f"[{cfg.task_name}] enroot cleanup failed: {e}", flush=True)
-
 
 @ray.remote(scheduling_strategy="SPREAD", runtime_env={"py_executable": sys.executable}, num_cpus=0.1)
 def _run_remote(params_dict: dict) -> bool:
@@ -464,7 +489,7 @@ def _run_remote(params_dict: dict) -> bool:
 
 
 class AnyTerminalAgent(SimpleResponsesAPIAgent):
-    """Runs any Gym agent harness inside a Terminal Bench task container."""
+    """Runs any Gym agent harness inside a Terminal Bench task sandbox."""
 
     config: AnyTerminalAgentConfig
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -502,155 +527,30 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
         )
         super().model_post_init(context)
 
-    # Container resolution
-
-    def _find_container(self, task_name: str, docker_image: str) -> str:
-        """Return a pre-built image path if available, otherwise a docker:// URI for runtime pull."""
-        if self.config.tb_image_dir:
-            image_dir = Path(self.config.tb_image_dir)
-            ext = "sqsh" if self.config.container_runtime == "enroot" else "sif"
-            for name in [task_name, task_name.replace("-", "_"), task_name.lower()]:
-                img_path = image_dir / f"{name}.{ext}"
-                if img_path.exists():
-                    return str(img_path.resolve())
-        if not docker_image.startswith("docker://"):
-            return f"docker://{docker_image}"
-        return docker_image
-
     @staticmethod
-    def _apptainer_exec(
-        params: AnyTerminalInstanceConfig,
-        mounts: list[str],
-        exec_cmd: str,
-        env: str = "",
-        workdir: Optional[str] = None,
-    ) -> str:
-        # NOTE: Apptainer cgroup flags (--cpus/--memory) are unusable here — rootless cgroups don't
-        # work under --fakeroot ("cannot use cgroups - rootless cgroups is not usable in fakeroot
-        # mode"). Instead we apply `ulimit -v` as a generous virtual-memory ceiling (default 32 GB)
-        # to prevent runaway tasks from exhausting the host. The task's cpu/memory footprint is also
-        # *reserved* in the Ray scheduler (_ray_resource_opts) to avoid host oversubscription.
-        pwd_flag = f"--pwd {shlex.quote(workdir)} " if workdir else ""
-        cmd = (
-            f"apptainer exec --writable-tmpfs --fakeroot --cleanenv --pid --no-mount home,tmp,bind-paths "
-            f"{pwd_flag}{env}{' '.join(mounts)} {params.container} {exec_cmd}"
-        )
-        if params.apptainer_memory_limit_mb > 0:
-            cmd = f"ulimit -v {params.apptainer_memory_limit_mb * 1024} && {cmd}"
-        return cmd
+    def _ray_resource_opts(params: AnyTerminalInstanceConfig) -> dict:
+        """Reserve the container's cpu/memory footprint in the Ray scheduler so concurrent containers
+        don't oversubscribe the host — the main cause of the compute-starved "productive-but-timed-out"
+        runs. The launcher task mostly awaits the sandbox exec calls, so these reservations are a
+        proxy for the container's real resource use. Memory reserves the task's memory_mb +
+        agent_overhead_mb (the in-container agent harness)."""
 
-    @staticmethod
-    def _enroot_remove_cmd(container_name: str, retries: int = 5, delay: int = 2) -> str:
-        # Slurm's enroot plugin holds bind mounts (/run, /etc/hostname, etc.) briefly after
-        # enroot start exits, causing an immediate enroot remove to fail with EBUSY.
-        quoted = shlex.quote(container_name)
-        return f"for _i in {' '.join(str(i) for i in range(1, retries + 1))}; do enroot remove --force {quoted} && break || sleep {delay}; done"
+        def _f(key):
+            v = params.problem_info.get(key)
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
 
-    @staticmethod
-    def _enroot_exec(
-        params: AnyTerminalInstanceConfig,
-        mounts: list[str],
-        exec_cmd: str,
-        env: str = "",
-        workdir: Optional[str] = None,
-    ) -> str:
-        container_name = f"ngtb_{params.agent_run_id}"
-        mount_flags = " ".join(mounts)
-        if workdir:
-            exec_cmd = f"bash -c {shlex.quote(f'cd {workdir} && {exec_cmd}')}"
-        # If no pre-built .sqsh, import the docker image to a temp file at runtime.
-        if params.container.startswith("docker://"):
-            sqsh_tmp = f"/tmp/{container_name}.sqsh"
-            import_step = f"enroot import --output {sqsh_tmp} {params.container} && "
-            container_ref = sqsh_tmp
-            cleanup_sqsh = f" rm -f {sqsh_tmp};"
-        else:
-            import_step = ""
-            container_ref = params.container
-            cleanup_sqsh = ""
-        cmd = (
-            f"{import_step}"
-            f"enroot create --name {shlex.quote(container_name)} {container_ref} && "
-            f"enroot start --root --rw {env}{mount_flags} {shlex.quote(container_name)} {exec_cmd}; "
-            f"{AnyTerminalAgent._enroot_remove_cmd(container_name)};{cleanup_sqsh}"
-        )
-        if params.apptainer_memory_limit_mb > 0:
-            cmd = f"ulimit -v {params.apptainer_memory_limit_mb * 1024} && {cmd}"
-        return cmd
-
-    def _build_agent_cmd(self, params: AnyTerminalInstanceConfig) -> str:
-        # Single container script:
-        # 1. Agent runs (tests not visible yet).
-        # 2. Agent writes agent_done sentinel → host copies tests into /trajectories_mount/staging/tests/.
-        # 3. Script waits for tests_ready sentinel, then runs test.sh from staging.
-        use_enroot = params.container_runtime == "enroot"
-        # _DPKG_FIX is only needed for Apptainer (squashfs→tmpfs cross-fs rename issue).
-        dpkg_fix = "" if use_enroot else _DPKG_FIX
-        script = (
-            "#!/bin/bash\n"
-            + dpkg_fix
-            + 'date +"%s.%N" > /trajectories_mount/agent_spinup_timestamp\n'
-            + f"{GymAgentHarnessProcessor(config=params).get_run_command()}\n"
-            + 'date +"%s.%N" > /trajectories_mount/eval_start_timestamp\n'
-            # Signal host that agent is done so it can stage the tests.
-            + "touch /trajectories_mount/agent_done\n"
-            # Wait for host to stage tests (poll with timeout matching eval budget).
-            + f"deadline=$(( $(date +%s) + {params.tb_eval_timeout} ))\n"
-            + "while [ ! -f /trajectories_mount/tests_ready ]; do\n"
-            + "  [ $(date +%s) -ge $deadline ] && echo 'timed out waiting for tests' && exit 1\n"
-            + "  sleep 1\n"
-            + "done\n"
-            # Symlink /tests into the writable tmpfs so test.sh's hardcoded /tests/... paths work.
-            # Remove any pre-existing /tests first: if the agent (or image) already created a
-            # /tests directory, `ln -s` would nest the link inside it (/tests/tests) instead of
-            # replacing it, leaving test.sh unreachable at /tests/test.sh.
-            + "rm -rf /tests\n"
-            + "ln -s /trajectories_mount/staging/tests /tests\n"
-            # Drop a minimal pytest.ini at / to prevent pytest from picking up Gym's pyproject.toml
-            # (host filesystem is overlaid by Apptainer; Gym's config has --pyargs which breaks paths).
-            + "printf '[pytest]\\naddopts =\\n' > /pytest.ini\n"
-            # Run test.sh from the staged copy (no execute bit needed with bash).
-            + "mkdir -p /logs/verifier\n"
-            + f"timeout {params.tb_eval_timeout} bash /tests/test.sh"
-            + " > /logs/verifier/test-stdout.txt 2>&1 || true\n"
-        )
-        script_dir = params.persistent_dir / "container_scripts"
-        script_dir.mkdir(parents=True, exist_ok=True)
-        (script_dir / "run_script.sh").write_text(script)
-
-        if use_enroot:
-            # Enroot mount syntax: --mount src:dst (no per-mount ro flag).
-            mounts = [
-                f"--mount {params.persistent_dir}:/trajectories_mount",
-                f"--mount {params.nemo_gym_root}:/nemo_gym_mount",
-                f"--mount {params.agent_deps_dir}:/agent_deps_mount",
-                f"--mount {params.verifier_dir}:/logs/verifier",
-                f"--mount {script_dir / 'run_script.sh'}:/container_scripts/run_script.sh",
-            ]
-        else:
-            mounts = [
-                f"--mount type=bind,src={params.persistent_dir},dst=/trajectories_mount",
-                f"--mount type=bind,src={params.nemo_gym_root},dst=/nemo_gym_mount,ro",
-                f"--mount type=bind,src={params.agent_deps_dir},dst=/agent_deps_mount,ro",
-                f"--mount type=bind,src={params.verifier_dir},dst=/logs/verifier",
-                f"--mount type=bind,src={script_dir / 'run_script.sh'},dst=/container_scripts/run_script.sh,ro",
-            ]
-        sampling = {
-            k: getattr(params.body, k)
-            for k in ("temperature", "top_p", "max_output_tokens")
-            if getattr(params.body, k, None) is not None
-        }
-        model_name = params.agent_kwargs.get("model") or params.body.model or "model"
-        env = (
-            (f"--env NGTB_MODEL_URL={shlex.quote(params.model_server_url)} " if params.model_server_url else "")
-            + f"--env NGTB_MODEL_NAME={shlex.quote(model_name)} "
-            + f"--env NGTB_AGENT_KWARGS={shlex.quote(json.dumps(params.agent_kwargs))} "
-            + f"--env NGTB_SAMPLING={shlex.quote(json.dumps(sampling))} "
-        )
-        workdir = params.problem_info.get("workdir")
-        if use_enroot:
-            return self._enroot_exec(params, mounts, "bash /container_scripts/run_script.sh", env=env, workdir=workdir)
-        return self._apptainer_exec(params, mounts, "bash /container_scripts/run_script.sh", env=env, workdir=workdir)
+        cpus = _f("cpus")
+        mem_mb = _f("memory_mb")
+        opts: dict = {"num_cpus": cpus if (cpus and cpus > 0) else 1}
+        if mem_mb and mem_mb > 0:
+            opts["memory"] = (int(mem_mb) + params.agent_overhead_mb) * 1024 * 1024
+        gpus = _f("gpus") or 0
+        if gpus > 0:
+            opts["num_gpus"] = gpus
+        return opts
 
     # Per-instance setup
 
@@ -687,13 +587,15 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             verifier_dir=verifier_dir,
             agent_run_id=agent_run_id,
             metrics_fpath=persistent_dir / "nemo_gym_metrics.json",
-            container=self._find_container(task_name, problem_info.get("docker_image", "ubuntu:22.04")),
+            container=_format_container(
+                self.config.container_formatter, task_name, problem_info.get("docker_image", "ubuntu:22.04")
+            ),
             ray_queue_timestamp=time.time(),
         )
         params.metrics_fpath.write_text("{}")
 
-        # Write instruction.txt + agent_runner.py, then build the apptainer command.
-        params.agent_command_str = self._build_agent_cmd(params)
+        # Write instruction.txt + agent_runner.py, then resolve the in-sandbox run command.
+        params.agent_command_str = GymAgentHarnessProcessor(config=params).get_run_command()
 
         return params
 
@@ -709,32 +611,6 @@ class AnyTerminalAgent(SimpleResponsesAPIAgent):
             tb_path.write_text(format_exc())
             print(f"[{params.task_name}] exception: see {tb_path}", file=sys.stderr)
             raise
-
-    @staticmethod
-    def _ray_resource_opts(params: AnyTerminalInstanceConfig) -> dict:
-        """Reserve the container's cpu/memory footprint in the Ray scheduler so concurrent containers
-        don't oversubscribe the host — the main cause of the compute-starved "productive-but-timed-out"
-        runs. The launcher task mostly awaits the apptainer subprocess, so these reservations are a
-        proxy for the container's real resource use. Since rootless cgroups can't hard-cap the
-        container here, this scheduling reservation is our only resource-isolation lever. Memory
-        reserves the task's memory_mb + agent_overhead_mb (the in-container Hermes harness)."""
-
-        def _f(key):
-            v = params.problem_info.get(key)
-            try:
-                return float(v) if v is not None else None
-            except (TypeError, ValueError):
-                return None
-
-        cpus = _f("cpus")
-        mem_mb = _f("memory_mb")
-        opts: dict = {"num_cpus": cpus if (cpus and cpus > 0) else 1}
-        if mem_mb and mem_mb > 0:
-            opts["memory"] = (int(mem_mb) + params.agent_overhead_mb) * 1024 * 1024
-        gpus = _f("gpus") or 0
-        if gpus > 0:
-            opts["num_gpus"] = gpus
-        return opts
 
     async def _inner_responses(self, params: AnyTerminalInstanceConfig) -> NeMoGymResponse:
         await _run_remote.options(**self._ray_resource_opts(params)).remote(params.model_dump())
