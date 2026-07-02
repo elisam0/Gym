@@ -32,6 +32,7 @@ with `instance_id`, `task_name`, `docker_image`, and `task_dir`
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -155,7 +156,7 @@ def _to_gym_row(task_dir: Path, task_cfg: dict) -> dict:
                 "instance_id": f"terminal_bench::{task_name}",
                 "task_name": task_name,
                 "docker_image": task_cfg.get("docker_image", "ubuntu:22.04"),
-                "task_dir": str(task_dir.resolve()),
+                "task_dir": os.path.abspath(task_dir),
                 "agent_timeout_sec": str(task_cfg["agent_timeout_sec"])
                 if task_cfg.get("agent_timeout_sec") is not None
                 else None,
