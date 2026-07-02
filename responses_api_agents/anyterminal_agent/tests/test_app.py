@@ -138,9 +138,8 @@ class TestFindContainer:
 
 class TestSetupScriptsExist:
     def test_supported_agents_have_deps_scripts(self) -> None:
-        scripts = Path(__file__).parent.parent / "setup_scripts"
-        assert (scripts / "hermes_agent_deps.sh").exists()
-        assert (scripts / "_portable_python.sh").exists()
+        assert (PARENT_DIR / "responses_api_agents" / "hermes_agent" / "scripts" / "hermes_agent_deps.sh").exists()
+        assert (Path(__file__).parent.parent / "setup_scripts" / "_portable_python.sh").exists()
 
 
 class TestExampleData:
