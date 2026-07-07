@@ -1,3 +1,5 @@
+results/
+deps/
 anyswe_results_*
 anyswe_*_deps
 swe_swebench_setup

@@ -339,7 +339,7 @@ class GymAgentHarnessProcessor(BaseModel):
     def setup(self) -> Path:
         """Install agent deps into a portable prefix mounted read-only at /agent_deps_mount."""
         agent_dir = PARENT_DIR / "responses_api_agents" / self._agent_key
-        deps_dir = self._parent / f"anyswe_{self._agent_key}_deps"
+        deps_dir = self._parent / "deps" / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
         script = agent_dir / "scripts" / f"{self._agent_key}_deps.sh"
         # Reinstall when setup inputs change.
@@ -351,6 +351,7 @@ class GymAgentHarnessProcessor(BaseModel):
             print(f"Agent deps already at {deps_dir}", flush=True)
             return deps_dir
 
+        deps_dir.parent.mkdir(parents=True, exist_ok=True)
         lock_path = deps_dir.parent / f".{deps_dir.name}.lockdir"
         while True:
             try:
@@ -429,9 +430,12 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         session_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
         workspace = Path(__file__).parent
 
+        results_dir = workspace / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+
         self._server = AnySweServerConfig(
             run_session_id=session_id,
-            base_results_dir=workspace / f"anyswe_results_{session_id}",
+            base_results_dir=results_dir / f"anyswe_results_{session_id}",
             model_server_url=model_url,
             nemo_gym_root=PARENT_DIR,
             agent_deps_dir=agent_deps_dir,
