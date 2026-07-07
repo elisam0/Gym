@@ -10,9 +10,9 @@ anyterminal_claude_code:
       agent_server_class: ClaudeCodeAgent
       agent_config_class: ClaudeCodeAgentConfig
       agent_kwargs:
-        model: aws/anthropic/bedrock-claude-opus-4-8
-        anthropic_api_key: ${anthropic_api_key}
-        anthropic_base_url: https://inference-api.nvidia.com
+        model: ${policy_model_name}
+        anthropic_api_key: ${policy_api_key}
+        anthropic_base_url: ${policy_base_url}
         timeout: 12500 # Max task timeout in Terminal Bench is 12000 seconds
 
       container_formatter: "docker://{docker_image}"
