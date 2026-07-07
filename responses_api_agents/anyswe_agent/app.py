@@ -338,18 +338,20 @@ class GymAgentHarnessProcessor(BaseModel):
 
     def setup(self) -> Path:
         """Install agent deps into a portable prefix mounted read-only at /agent_deps_mount."""
-        deps_dir = self._parent / f"anyswe_{self._agent_key}_deps"
+        agent_dir = PARENT_DIR / "responses_api_agents" / self._agent_key
+        deps_dir = self._parent / "deps" / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
-        script = self._parent / "setup_scripts" / f"{self._agent_key}_deps.sh"
+        script = agent_dir / "scripts" / f"{self._agent_key}_deps.sh"
         # Reinstall when setup inputs change.
         shared = self._parent / "setup_scripts" / "_portable_python.sh"
-        reqs = PARENT_DIR / "responses_api_agents" / self._agent_key / "requirements.txt"
+        reqs = agent_dir / "requirements.txt"
         recipe_src = b"".join(p.read_bytes() for p in (script, shared, reqs) if p.exists()) or b"no-script"
         recipe = hashlib.sha256(recipe_src).hexdigest()
         if sentinel.exists() and sentinel.read_text().strip() == recipe:
             print(f"Agent deps already at {deps_dir}", flush=True)
             return deps_dir
 
+        deps_dir.parent.mkdir(parents=True, exist_ok=True)
         lock_path = deps_dir.parent / f".{deps_dir.name}.lockdir"
         while True:
             try:
@@ -373,7 +375,10 @@ class GymAgentHarnessProcessor(BaseModel):
                 return deps_dir
 
             deps_dir.mkdir(parents=True, exist_ok=True)
-            proc = Popen(f"DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}", shell=True)
+            proc = Popen(
+                f"PORTABLE_PYTHON_SH={shared} DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}",
+                shell=True,
+            )
             assert proc.wait() == 0, f"Agent deps setup failed ({script})"
             sentinel.write_text(recipe)
             return deps_dir
