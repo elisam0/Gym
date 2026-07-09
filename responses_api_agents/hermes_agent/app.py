@@ -29,11 +29,7 @@ from fastapi import Request
 from pydantic import ConfigDict
 
 from nemo_gym.base_resources_server import BaseRunRequest, BaseVerifyResponse
-from nemo_gym.base_responses_api_agent import (
-    BaseResponsesAPIAgentConfig,
-    Body,
-    SimpleResponsesAPIAgent,
-)
+from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body, SimpleResponsesAPIAgent
 from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import (
@@ -46,7 +42,9 @@ from nemo_gym.openai_utils import (
     NeMoGymResponseOutputMessageForTraining,
     NeMoGymResponseOutputText,
     NeMoGymResponseOutputTokensDetails,
+    NeMoGymResponseReasoningItem,
     NeMoGymResponseUsage,
+    NeMoGymSummary,
 )
 from nemo_gym.server_utils import get_response_json, raise_for_status
 
@@ -61,6 +59,15 @@ def _trajectory_to_output_items(messages, n_input):
         if isinstance(content, list):
             content = "".join(c.get("text", "") if isinstance(c, dict) else getattr(c, "text", "") for c in content)
         if role == "assistant":
+            reasoning_text = item.get("reasoning") or ""
+            if reasoning_text:
+                output_items.append(
+                    NeMoGymResponseReasoningItem(
+                        id=f"rsn-{len(output_items)}",
+                        summary=[NeMoGymSummary(type="summary_text", text=reasoning_text)],
+                        type="reasoning",
+                    )
+                )
             output_items.append(
                 NeMoGymResponseOutputMessageForTraining(
                     id=f"msg-{len(output_items)}",
