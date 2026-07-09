@@ -13,7 +13,7 @@ anyswe_hermes:
         max_turns: 90
         terminal_backend: local
         terminal_timeout: 180
-        compression_enabled: true
+        compression_enabled: true # should disable for training
         compression_threshold: 0.85
 
       container_formatter: docker://swebench/sweb.eval.x86_64.{instance_id}
