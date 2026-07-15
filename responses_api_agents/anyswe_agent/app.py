@@ -241,8 +241,10 @@ config = {agent_cfg_class}(
 agent = {agent_class}(config=config, server_client=_mock_client)
 
 if MODEL_URL:
+    _v1 = MODEL_URL if MODEL_URL.endswith("/v1") else MODEL_URL + "/v1"
+    if hasattr(agent, "resolve_model_base_url"):
+        object.__setattr__(agent, "resolve_model_base_url", lambda *args, **kwargs: _v1)
     if hasattr(agent, "_resolve_model_base_url"):
-        _v1 = MODEL_URL if MODEL_URL.endswith("/v1") else MODEL_URL + "/v1"
         agent._resolve_model_base_url = lambda: _v1
     if hasattr(agent, "_resolve_base_url"):
         agent._resolve_base_url = lambda: MODEL_URL
