@@ -43,6 +43,7 @@ from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body,
 from nemo_gym.config_types import ModelServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
+from nemo_gym.server_utils import apply_rollout_prefix
 from nemo_gym.sandbox.providers.apptainer import ApptainerProvider
 from nemo_gym.sandbox.providers.docker import DockerProvider
 from nemo_gym.sandbox.providers.docker.provider import DockerCreateConfig
@@ -449,7 +450,9 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         )
         super().model_post_init(context)
 
-    def _setup_params(self, body: NeMoGymResponseCreateParamsNonStreaming) -> Tuple[AnySweInstanceConfig, str]:
+    def _setup_params(
+        self, body: NeMoGymResponseCreateParamsNonStreaming, rollout_id: Optional[str] = None
+    ) -> Tuple[AnySweInstanceConfig, str]:
         problem_info = body.metadata | {"container_formatter": self.config.container_formatter}
         instance_id = problem_info.get("instance_id", "unknown")
 
@@ -471,9 +474,13 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         instance_dict.setdefault("repo_name", instance_dict.get("repo", ""))
         instance_dataset_path.write_text(json.dumps(instance_dict) + "\n")
 
+        server_config = self._server.model_dump()
+        if rollout_id and server_config["model_server_url"]:
+            server_config["model_server_url"] = apply_rollout_prefix(server_config["model_server_url"], rollout_id)
+
         params = AnySweInstanceConfig(
             **self.config.model_dump(),
-            **self._server.model_dump(),
+            **server_config,
             problem_info=problem_info,
             body=body,
             persistent_dir=persistent_dir,
@@ -599,8 +606,10 @@ class AnySweAgent(SimpleResponsesAPIAgent):
 
     # Request handlers
 
-    async def responses(self, body: NeMoGymResponseCreateParamsNonStreaming = Body()) -> NeMoGymResponse:
-        params, launch_command = self._setup_params(body)
+    async def _responses(
+        self, body: NeMoGymResponseCreateParamsNonStreaming, rollout_id: Optional[str] = None
+    ) -> NeMoGymResponse:
+        params, launch_command = self._setup_params(body, rollout_id)
         (params.persistent_dir / "params.json").write_text(_safe_config_json(params, indent=2))
         try:
             return await self._inner_responses(params, launch_command)
@@ -609,6 +618,9 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             tb_path.write_text(format_exc())
             print(f"[{params.instance_id}] exception: see {tb_path}", file=sys.stderr)
             raise
+
+    async def responses(self, body: NeMoGymResponseCreateParamsNonStreaming = Body()) -> NeMoGymResponse:
+        return await self._responses(body)
 
     async def _inner_responses(self, params: AnySweInstanceConfig, launch_command: str) -> NeMoGymResponse:
         provider_name = next(iter(self.config.sandbox_provider), "docker")
@@ -693,7 +705,7 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             body.responses_create_params.parallel_tool_calls = True
             body.responses_create_params.tool_choice = "auto"
             try:
-                response = await self.responses(body.responses_create_params)
+                response = await self._responses(body.responses_create_params, self.rollout_id_from_run(body))
             except Exception:
                 # Failure isolation: one bad instance must not abort the whole cell, and resume
                 # must still see a row. Return a present, masked, reward-0 result instead of raising.
