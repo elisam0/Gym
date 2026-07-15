@@ -322,6 +322,10 @@ class AnySweInstanceConfig(AnySweAgentConfig, AnySweServerConfig):
         return self.problem_info["instance_id"]
 
 
+class AnySweRunRequest(BaseRunRequest):
+    model_config = ConfigDict(extra="allow")
+
+
 class AnySweVerifyResponse(SWEBenchMetrics, BaseVerifyResponse):
     instance_config: Dict[str, Any]
 
@@ -700,7 +704,7 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             },
         )
 
-    async def run(self, body: BaseRunRequest) -> AnySweVerifyResponse:
+    async def run(self, body: AnySweRunRequest) -> AnySweVerifyResponse:
         async with self._sem:
             body.responses_create_params.parallel_tool_calls = True
             body.responses_create_params.tool_choice = "auto"
