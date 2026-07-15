@@ -44,7 +44,8 @@ from nemo_gym.config_types import ModelServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
 from nemo_gym.sandbox.providers.apptainer import ApptainerProvider
-from nemo_gym.sandbox.providers.docker import DockerSandboxProvider
+from nemo_gym.sandbox.providers.docker import DockerProvider
+from nemo_gym.sandbox.providers.docker.provider import DockerCreateConfig
 from responses_api_agents.swe_env.harness import SweTask
 from responses_api_agents.swe_env.self_drive import provision_and_collect
 from responses_api_agents.swe_env.verify_task import verify_task
@@ -496,7 +497,7 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             params: The per-instance config carrying the run dir + host mount sources.
 
         Returns:
-            An ``ApptainerProvider`` (apptainer) or ``DockerSandboxProvider`` (docker) configured
+            An ``ApptainerProvider`` (apptainer) or ``DockerProvider`` (docker) configured
             with the mounts, or the configured ``sandbox_provider`` mapping for other backends.
         """
         name = next(iter(self.config.sandbox_provider), "docker")
@@ -533,16 +534,18 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             return ApptainerProvider(**appt)
         if name != "docker":
             return self.config.sandbox_provider
-        return DockerSandboxProvider(
-            network=self.config.docker_network,
-            run_args=[
-                "-v",
-                f"{params.persistent_dir}:/trajectories_mount",
-                "-v",
-                f"{params.nemo_gym_root}:/nemo_gym_mount:ro",
-                "-v",
-                f"{params.agent_deps_dir}:/agent_deps_mount:ro",
-            ],
+        return DockerProvider(
+            create_config=DockerCreateConfig(
+                network=self.config.docker_network,
+                extra_run_args=[
+                    "-v",
+                    f"{params.persistent_dir}:/trajectories_mount",
+                    "-v",
+                    f"{params.nemo_gym_root}:/nemo_gym_mount:ro",
+                    "-v",
+                    f"{params.agent_deps_dir}:/agent_deps_mount:ro",
+                ],
+            ),
         )
 
     def _grading_provider(self):
