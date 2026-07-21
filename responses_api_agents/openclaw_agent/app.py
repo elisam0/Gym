@@ -282,7 +282,28 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
         cfg = copy.deepcopy(base)
         self._deep_merge(cfg, copy.deepcopy(self.config.openclaw_config))
         self._merge_headless_tool_denies(cfg)
+        self._route_model_calls_through_proxy(cfg)
         return cfg
+
+    @staticmethod
+    def _capture_proxy_base_url() -> str:
+        """Rollout-scoped policy_model proxy URL the anyswe/anyterminal runner injects into the
+        sandbox (NGSWE_MODEL_URL / NGTB_MODEL_URL) when a model_server is configured; empty on
+        direct-to-serve runs. Pointing openclaw's provider baseUrl here routes its model calls
+        through Gym's per-rollout model-call capture instead of straight to the serve."""
+        url = os.environ.get("NGSWE_MODEL_URL") or os.environ.get("NGTB_MODEL_URL") or ""
+        if url and not url.endswith("/v1"):
+            url += "/v1"
+        return url
+
+    def _route_model_calls_through_proxy(self, cfg: dict[str, Any]) -> None:
+        base_url = self._capture_proxy_base_url()
+        if not base_url:
+            return
+        providers = ((cfg.get("models") or {}).get("providers")) or {}
+        for provider in providers.values():
+            if isinstance(provider, dict) and provider.get("baseUrl"):
+                provider["baseUrl"] = base_url
 
     def _workspace_root(self) -> Path:
         root = Path(self.config.workspace_root).expanduser() / f"openclaw_{uuid4().hex[:8]}"

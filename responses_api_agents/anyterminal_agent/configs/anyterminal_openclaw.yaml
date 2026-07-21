@@ -60,5 +60,9 @@ anyterminal_openclaw:
 
       concurrency: 2
 
+      model_server:
+        name: policy_model
+        type: responses_api_models
+
       datasets:
         - {name: example, type: example, jsonl_fpath: responses_api_agents/anyterminal_agent/data/terminal_bench.jsonl}
