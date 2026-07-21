@@ -41,6 +41,10 @@ anyswe_openclaw:
       swebench_tests_timeout: 1800
       concurrency: 2
 
+      model_server:
+        name: policy_model
+        type: responses_api_models
+
       datasets:
         - name: example
           type: example
