@@ -43,10 +43,10 @@ from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body,
 from nemo_gym.config_types import ModelServerRef
 from nemo_gym.global_config import get_first_server_config_dict
 from nemo_gym.openai_utils import NeMoGymResponse, NeMoGymResponseCreateParamsNonStreaming
-from nemo_gym.server_utils import apply_rollout_prefix
 from nemo_gym.sandbox.providers.apptainer import ApptainerProvider
 from nemo_gym.sandbox.providers.docker import DockerProvider
 from nemo_gym.sandbox.providers.docker.provider import DockerCreateConfig
+from nemo_gym.server_utils import apply_rollout_prefix
 from responses_api_agents.swe_env.harness import SweTask
 from responses_api_agents.swe_env.self_drive import provision_and_collect
 from responses_api_agents.swe_env.verify_task import verify_task
@@ -204,6 +204,14 @@ from pathlib import Path
 
 sys.path.insert(0, "/nemo_gym_mount")
 os.environ["PATH"] = "/agent_deps_mount/bin:" + os.environ.get("PATH", "")
+
+# Activate the testbed virtualenv so the agent uses the repo's pinned Python and packages.
+# Without this, harness tools that spawn Python subprocesses may fall back to the
+# agent-deps interpreter, which lacks the repo packages.
+_testbed_venv = "/opt/miniconda3/envs/testbed"
+if os.path.isdir(_testbed_venv):
+    os.environ["VIRTUAL_ENV"] = _testbed_venv
+    os.environ["PATH"] = os.path.join(_testbed_venv, "bin") + ":" + os.environ.get("PATH", "")
 
 def _json_env(name):
     encoded = os.environ.get(name + "_B64")
