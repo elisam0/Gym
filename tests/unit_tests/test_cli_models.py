@@ -16,8 +16,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from omegaconf import OmegaConf
 
+from nemo_gym import NEMO_GYM_EXTRA_ROOTS_ENV_VAR_NAME
 from nemo_gym.cli.models import list_models
 from nemo_gym.model_registry import ModelEntry
 
@@ -91,3 +93,72 @@ class TestListModels:
         assert len(payload) == len(expected)
         for row in expected:
             assert row in payload
+
+    def test_inspect_model_by_name(self, capsys) -> None:
+        with (
+            patch(
+                "nemo_gym.cli.models.get_global_config_dict",
+                return_value=_mock_global_config({"component_name": "my_model"}),
+            ),
+            patch("nemo_gym.cli.models.discover_models", return_value=_MODELS),
+        ):
+            list_models()
+        out = capsys.readouterr().out
+        assert "The my_model model" in out
+        assert f"config: {_MODELS['my_model'].config_path.resolve()}" in out
+        assert "Usage example:" not in out  # thin view
+
+    def test_inspect_model_by_flavor_token(self, capsys) -> None:
+        # A `<model>/<flavor>` token inspects that flavor's config.
+        with (
+            patch(
+                "nemo_gym.cli.models.get_global_config_dict",
+                return_value=_mock_global_config({"component_name": "my_model/some_other_flavor"}),
+            ),
+            patch("nemo_gym.cli.models.discover_models", return_value=_MODELS),
+        ):
+            list_models()
+        out = capsys.readouterr().out
+        assert "The my_model/some_other_flavor model" in out
+        assert f"config: {_MODELS['my_model/some_other_flavor'].config_path.resolve()}" in out
+
+    def test_inspect_unknown_model_exits(self, capsys) -> None:
+        with (
+            patch(
+                "nemo_gym.cli.models.get_global_config_dict",
+                return_value=_mock_global_config({"component_name": "mymodel"}),
+            ),
+            patch("nemo_gym.cli.models.discover_models", return_value=_MODELS),
+        ):
+            with pytest.raises(SystemExit):
+                list_models()
+        out = capsys.readouterr().out
+        assert "Unknown model 'mymodel'" in out and "my_model" in out
+
+    def test_inspect_unknown_flavor_exits(self, capsys) -> None:
+        # A `<model>/<flavor>` token with an invalid flavor is rejected.
+        with (
+            patch(
+                "nemo_gym.cli.models.get_global_config_dict",
+                return_value=_mock_global_config({"component_name": "my_model/nope"}),
+            ),
+            patch("nemo_gym.cli.models.discover_models", return_value=_MODELS),
+        ):
+            with pytest.raises(SystemExit):
+                list_models()
+        out = capsys.readouterr().out
+        assert "Unknown model 'my_model/nope'" in out
+
+    def test_inspect_shows_absolute_config_path(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        # Real discovery (via an extra root): the config line must be the config's absolute path.
+        model_dir = tmp_path / "responses_api_models" / "my_model"
+        (model_dir / "configs").mkdir(parents=True)
+        (model_dir / "configs" / "my_model.yaml").write_text("my_model: {}\n")
+        monkeypatch.setenv(NEMO_GYM_EXTRA_ROOTS_ENV_VAR_NAME, str(tmp_path))
+        with patch(
+            "nemo_gym.cli.models.get_global_config_dict",
+            return_value=_mock_global_config({"component_name": "my_model"}),
+        ):
+            list_models()
+        expected_config = (model_dir / "configs" / "my_model.yaml").resolve()
+        assert f"config: {expected_config}" in capsys.readouterr().out
