@@ -305,7 +305,7 @@ class TestSafeConfigJson:
     def test_nested_provider_api_key_redacted(self, tmp_path: Path) -> None:
         cfg = _make_instance_config(
             tmp_path,
-            sandbox_provider={"opensandbox": {"connection": {"api_key": "secret"}}},
+            sandbox_provider={"opensandbox": {"connection": {"api_key": "secret"}}},  # pragma: allowlist secret
         )
         result = json.loads(_safe_config_json(cfg))
         assert result["sandbox_provider"]["opensandbox"]["connection"]["api_key"] == "***"
