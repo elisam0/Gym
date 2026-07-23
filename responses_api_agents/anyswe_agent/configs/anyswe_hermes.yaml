@@ -1,0 +1,31 @@
+anyswe_hermes:
+  responses_api_agents:
+    anyswe_agent:
+      entrypoint: app.py
+      domain: coding
+      description: SWE-bench run by the hermes agent natively inside the task container.
+      value: Eval software engineering capabilities on SWE-bench with any Gym agent.
+
+      agent_server_module: responses_api_agents.hermes_agent.app
+      agent_server_class: HermesAgent
+      agent_config_class: HermesAgentConfig
+      agent_kwargs: # Harbor default params for parity
+        max_turns: 90
+        terminal_backend: local
+        terminal_timeout: 180
+        compression_enabled: true # should disable for training
+        compression_threshold: 0.85
+
+      container_formatter: docker://swebench/sweb.eval.x86_64.{instance_id}
+      swebench_agent_timeout: 2700
+      swebench_tests_timeout: 1800
+      concurrency: 18
+
+      model_server:
+        name: policy_model
+        type: responses_api_models
+
+      datasets:
+        - name: example
+          type: example
+          jsonl_fpath: responses_api_agents/anyswe_agent/data/example.jsonl
