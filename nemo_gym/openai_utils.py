@@ -335,7 +335,6 @@ class NeMoGymResponseCreateParamsNonStreaming(BaseModel):
     truncation: Optional[Literal["auto", "disabled"]] = None
     user: Optional[str] = None
     stream: Optional[bool] = None  # accept stream=true; server forwards non-streaming (see chat_completions/responses)
-    chat_template_kwargs: Optional[Dict[str, Any]] = None
 
 
 ########################################
