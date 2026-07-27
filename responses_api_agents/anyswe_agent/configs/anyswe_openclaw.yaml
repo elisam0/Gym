@@ -1,0 +1,51 @@
+anyswe_openclaw:
+  responses_api_agents:
+    anyswe_agent:
+      entrypoint: app.py
+      domain: coding
+      description: SWE-bench run by OpenClaw natively inside the task container.
+      value: Eval software engineering capabilities on SWE-bench with any Gym agent.
+
+      agent_server_module: responses_api_agents.openclaw_agent.app
+      agent_server_class: OpenClawAgent
+      agent_config_class: OpenClawAgentConfig
+      agent_kwargs:
+        model: nvinf/${policy_model_name}
+        timeout: 1800
+        setup_timeout: 300
+        thinking: "off"
+        openclaw_version: "2026.6.11"
+        node_bin_dir: "/agent_deps_mount/bin"
+        workspace_root: "/tmp/openclaw_ws"
+        system_prompt: "You are fixing a bug in the repository at /testbed. Use your tools to inspect and edit the source files under /testbed. Make the minimal correct code change and leave the final fix applied in /testbed. Do not create scaffolding or notes files in /testbed."
+        openclaw_config:
+          agents:
+            defaults:
+              workspace: "."
+          tools:
+            profile: coding
+          models:
+            providers:
+              nvinf:
+                api: openai-completions
+                baseUrl: ${policy_base_url}
+                apiKey: ${policy_api_key}
+                models:
+                - id: ${policy_model_name}
+                  name: ${policy_model_name}
+                  api: openai-completions
+
+      container_formatter: data/sifs/{instance_id}.sif
+      sandbox_provider: {apptainer: {}}
+      swebench_agent_timeout: 2100
+      swebench_tests_timeout: 1800
+      concurrency: 2
+
+      model_server:
+        name: policy_model
+        type: responses_api_models
+
+      datasets:
+        - name: example
+          type: example
+          jsonl_fpath: responses_api_agents/anyswe_agent/data/example.jsonl

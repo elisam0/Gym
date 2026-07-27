@@ -14,12 +14,14 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
 import os
 import shlex
 import shutil
+import signal
 from asyncio import Semaphore
 from pathlib import Path
 from time import time
@@ -30,11 +32,7 @@ from fastapi import Request
 from pydantic import ConfigDict, Field
 
 from nemo_gym.base_resources_server import BaseRunRequest, BaseVerifyResponse
-from nemo_gym.base_responses_api_agent import (
-    BaseResponsesAPIAgentConfig,
-    Body,
-    SimpleResponsesAPIAgent,
-)
+from nemo_gym.base_responses_api_agent import BaseResponsesAPIAgentConfig, Body, SimpleResponsesAPIAgent
 from nemo_gym.config_types import ResourcesServerRef
 from nemo_gym.openai_utils import (
     NeMoGymEasyInputMessage,
@@ -284,7 +282,28 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
         cfg = copy.deepcopy(base)
         self._deep_merge(cfg, copy.deepcopy(self.config.openclaw_config))
         self._merge_headless_tool_denies(cfg)
+        self._route_model_calls_through_proxy(cfg)
         return cfg
+
+    @staticmethod
+    def _capture_proxy_base_url() -> str:
+        """Rollout-scoped policy_model proxy URL the anyswe/anyterminal runner injects into the
+        sandbox (NGSWE_MODEL_URL / NGTB_MODEL_URL) when a model_server is configured; empty on
+        direct-to-serve runs. Pointing openclaw's provider baseUrl here routes its model calls
+        through Gym's per-rollout model-call capture instead of straight to the serve."""
+        url = os.environ.get("NGSWE_MODEL_URL") or os.environ.get("NGTB_MODEL_URL") or ""
+        if url and not url.endswith("/v1"):
+            url += "/v1"
+        return url
+
+    def _route_model_calls_through_proxy(self, cfg: dict[str, Any]) -> None:
+        base_url = self._capture_proxy_base_url()
+        if not base_url:
+            return
+        providers = ((cfg.get("models") or {}).get("providers")) or {}
+        for provider in providers.values():
+            if isinstance(provider, dict) and provider.get("baseUrl"):
+                provider["baseUrl"] = base_url
 
     def _workspace_root(self) -> Path:
         root = Path(self.config.workspace_root).expanduser() / f"openclaw_{uuid4().hex[:8]}"
@@ -330,6 +349,28 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
         session_file = agent_meta.get("sessionFile") if isinstance(agent_meta, dict) else None
         return Path(session_file) if isinstance(session_file, str) and session_file else None
 
+    @staticmethod
+    def _find_partial_session(home: Path) -> Optional[Path]:
+        """Locate OpenClaw's session file on disk when there is no completion envelope to point at
+        it, i.e. the run was cut short by a timeout. OpenClaw writes the session incrementally, so
+        the transcript up to the last completed turn is already on disk; return the most recently
+        written .jsonl under the OpenClaw home that parses to at least one message."""
+        try:
+            candidates = sorted(
+                (p for p in home.rglob("*.jsonl") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return None
+        for path in candidates:
+            try:
+                if parse_openclaw_session(path.read_text(errors="replace")):
+                    return path
+            except OSError:
+                continue
+        return None
+
     async def _run_openclaw(
         self, instruction: str, system_prompt: Optional[str]
     ) -> tuple[list[Any], dict[str, int], str]:
@@ -371,16 +412,59 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
                 prompt,
                 *self.config.extra_args,
             ]
-            code, stdout, stderr = await self._run_exec(cmd, cwd=str(work_dir), env=env, timeout=self.config.timeout)
+            # Run OpenClaw, salvaging a partial transcript if the run is cut short. It can be cut
+            # short two ways: our own self.config.timeout (raises TimeoutError), or an outer
+            # harness/sandbox timeout that SIGTERMs this whole process during its grace window before
+            # SIGKILL. In the SIGTERM case a plain `finally` would not run in time and the workdir
+            # would be lost, so we stop waiting on the signal, read OpenClaw's incrementally-written
+            # session off disk, and return it. Returning quickly lets the harness still write the
+            # response before the SIGKILL, so no harness change is needed.
+            code, stdout, stderr = None, "", ""
+            loop = asyncio.get_running_loop()
+            sigterm_hit = asyncio.Event()
+            handler_installed = False
+            try:
+                loop.add_signal_handler(signal.SIGTERM, sigterm_hit.set)
+                handler_installed = True
+            except (NotImplementedError, RuntimeError):
+                pass  # signal handlers need the main-thread loop; fall back to timeout-only salvage
+
+            run_task = asyncio.ensure_future(
+                self._run_exec(cmd, cwd=str(work_dir), env=env, timeout=self.config.timeout)
+            )
+            try:
+                if handler_installed:
+                    term_task = asyncio.ensure_future(sigterm_hit.wait())
+                    done, _ = await asyncio.wait({run_task, term_task}, return_when=asyncio.FIRST_COMPLETED)
+                    term_task.cancel()
+                    if run_task in done:
+                        code, stdout, stderr = run_task.result()
+                    else:
+                        LOG.warning("openclaw received SIGTERM; salvaging partial session")
+                        run_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await run_task
+                else:
+                    code, stdout, stderr = await run_task
+            except TimeoutError:
+                LOG.warning("openclaw timed out after %ds; salvaging partial session", self.config.timeout)
+            finally:
+                if handler_installed:
+                    with contextlib.suppress(Exception):
+                        loop.remove_signal_handler(signal.SIGTERM)
+
             if code:
                 LOG.warning("openclaw exited %d: %s", code, stderr)
-            LOG.debug("openclaw stdout (%d chars): %s", len(stdout), stdout[:2000])
+            if stdout:
+                LOG.debug("openclaw stdout (%d chars): %s", len(stdout), stdout[:2000])
 
             fallback_items, usage = parse_openclaw_output(stdout)
             envelope = _decode_last_json_dict_suffix(stdout)
 
+            # On a normal finish the envelope points at the session file; on a cut-short run there is
+            # no envelope, so fall back to locating the partial session that OpenClaw wrote to disk.
             output_items: list[Any] = []
-            session_path = self._session_file(envelope)
+            session_path = self._session_file(envelope) or self._find_partial_session(home)
             if session_path and session_path.is_file():
                 output_items = parse_openclaw_session(session_path.read_text(errors="replace"))
             if not output_items:
@@ -423,6 +507,11 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
 
+        # OpenClaw's output envelope exposes no internal truncation / stop-reason signal (only the
+        # final text + usage), so — unlike hermes and claude_code — we cannot mark the response
+        # "incomplete" on an internal max-turns / context cutoff. Subprocess-timeout truncation is
+        # the observable case and is masked upstream by anyswe's agent_timed_out. If OpenClaw later
+        # surfaces a stop reason, set status="incomplete" here.
         return NeMoGymResponse(
             id=f"resp_{uuid4().hex}",
             created_at=int(time()),

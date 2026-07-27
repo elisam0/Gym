@@ -1,0 +1,8 @@
+results/
+deps/
+anyswe_results_*
+results/
+anyswe_*_deps
+swe_swebench_setup
+swe_swebench_multilingual_setup
+swe_r2e_gym_setup

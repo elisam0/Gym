@@ -1,8 +1,0 @@
-{% set language = instance.repo_language | default('') %}
-{{ language }} repository at {{ workspace_path }}.
-
-Issue to fix:
-
-{{ instance.problem_statement }}
-
-Implement the minimal fix in non-test files only inside {{ workspace_path }}.
