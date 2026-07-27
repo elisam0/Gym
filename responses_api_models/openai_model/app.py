@@ -77,25 +77,10 @@ class SimpleModelServer(SimpleResponsesAPIModel):
 
         return super().model_post_init(context)
 
-    def _merge_chat_template_kwargs(self, body_dict: Dict[str, Any], request_body: Dict[str, Any]) -> None:
-        """Merge chat_template_kwargs per key, with extra_body winning over the request.
-
-        Agents set these on every call (hermes always sends enable_thinking), so the plain
-        dict union above would replace the server's values wholesale and leave them unreachable.
-        """
-        merged = {
-            **(request_body.get("chat_template_kwargs") or {}),
-            **(self.config.extra_body.get("chat_template_kwargs") or {}),
-        }
-        if merged:
-            body_dict["chat_template_kwargs"] = merged
-
     async def responses(self, body: NeMoGymResponseCreateParamsNonStreaming = Body()) -> NeMoGymResponse:
-        request_body = body.model_dump(exclude_unset=True)
-        body_dict = self.config.extra_body | request_body
+        body_dict = self.config.extra_body | body.model_dump(exclude_unset=True)
         body_dict["model"] = self.config.openai_model
         body_dict.pop("stream", None)  # non-streaming server: never forward a stream flag upstream
-        self._merge_chat_template_kwargs(body_dict, request_body)
         if self.config.drop_input_reasoning_items:
             input_items = body_dict.get("input")
             if isinstance(input_items, list):
@@ -109,11 +94,9 @@ class SimpleModelServer(SimpleResponsesAPIModel):
     async def chat_completions(
         self, body: NeMoGymChatCompletionCreateParamsNonStreaming = Body()
     ) -> NeMoGymChatCompletion:
-        request_body = body.model_dump(exclude_unset=True)
-        body_dict = self.config.extra_body | request_body
+        body_dict = self.config.extra_body | body.model_dump(exclude_unset=True)
         body_dict["model"] = self.config.openai_model
         body_dict.pop("stream", None)  # non-streaming server: never forward a stream flag upstream
-        self._merge_chat_template_kwargs(body_dict, request_body)
         async with self._semaphore:
             openai_response_dict = await self._client.create_chat_completion(**body_dict)
         return NeMoGymChatCompletion.model_validate(openai_response_dict)
