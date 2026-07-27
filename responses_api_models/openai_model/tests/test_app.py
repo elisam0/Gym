@@ -63,7 +63,7 @@ def _response_data() -> dict:
 
 
 class TestApp:
-    def _setup_server(self, max_concurrent_requests=None, drop_input_reasoning_items=False):
+    def _setup_server(self, max_concurrent_requests=None, drop_input_reasoning_items=False, extra_body=None):
         config = SimpleModelServerConfig(
             host="0.0.0.0",
             port=8081,
@@ -74,6 +74,7 @@ class TestApp:
             name="test_model_server",
             max_concurrent_requests=max_concurrent_requests,
             drop_input_reasoning_items=drop_input_reasoning_items,
+            extra_body=extra_body or {},
         )
         return SimpleModelServer(config=config, server_client=MagicMock(spec=ServerClient, global_config_dict={}))
 
@@ -139,6 +140,43 @@ class TestApp:
         )
         calls = read_model_call_records(CaptureStore(tmp_path), "chat-test")
         assert len(calls) == 1 and calls[0].dialect == "chat"
+
+    async def test_chat_template_kwargs_forwarded(self) -> None:
+        server = self._setup_server(extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+        app = server.setup_webserver()
+        client = TestClient(app)
+
+        captured: dict = {}
+
+        async def mock_create_chat(**kwargs):
+            captured.clear()
+            captured.update(kwargs)
+            return {
+                "id": "chatcmpl-ctk",  # pragma: allowlist secret
+                "choices": [{"finish_reason": "stop", "index": 0, "message": {"content": "hi", "role": "assistant"}}],
+                "created": 1753983922,
+                "model": "dummy_model",
+                "object": "chat.completion",
+            }
+
+        server._client = MagicMock(spec=NeMoGymAsyncOpenAI)
+        server._client.create_chat_completion = AsyncMock(side_effect=mock_create_chat)
+
+        # Request omits chat_template_kwargs: the server's extra_body reaches the model.
+        omitted = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert omitted.status_code == 200
+        assert captured["chat_template_kwargs"] == {"enable_thinking": False}
+
+        # Request sets chat_template_kwargs: it reaches the model instead of being dropped.
+        explicit = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": True},
+            },
+        )
+        assert explicit.status_code == 200
+        assert captured["chat_template_kwargs"] == {"enable_thinking": True}
 
     async def test_responses(self, monkeypatch: MonkeyPatch, tmp_path) -> None:
         server = self._setup_server()
