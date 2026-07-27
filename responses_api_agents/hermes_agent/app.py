@@ -170,6 +170,8 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     terminal_timeout: int = 180
     system_prompt: Optional[str] = None
     compression_enabled: bool = True
+    enable_thinking: Optional[bool] = None
+    truncate_history_thinking: Optional[bool] = None
     compression_threshold: float = 0.85
     delegation_max_iterations: int = 50
     checkpoints_enabled: bool = False
@@ -310,9 +312,16 @@ class HermesAgent(SimpleResponsesAPIAgent):
             # (NonStreaming schema -> HTTP 422 "stream: Input should be False"). Force it off here,
             # which is what the no-stream-consumer / quiet_mode path already expects.
             kw["stream"] = False
-            ctk = kw.setdefault("extra_body", {}).setdefault("chat_template_kwargs", {})
-            ctk.setdefault("enable_thinking", True)
-            ctk["truncate_history_thinking"] = False
+            ctk = {
+                k: v
+                for k, v in (
+                    ("enable_thinking", self.config.enable_thinking),
+                    ("truncate_history_thinking", self.config.truncate_history_thinking),
+                )
+                if v is not None
+            }
+            if ctk:
+                kw.setdefault("extra_body", {}).setdefault("chat_template_kwargs", {}).update(ctk)
             return kw
 
         agent._build_api_kwargs = _patched_build_api_kwargs
