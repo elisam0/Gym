@@ -170,6 +170,10 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     terminal_timeout: int = 180
     system_prompt: Optional[str] = None
     compression_enabled: bool = True
+    # Written straight into hermes config.yaml as the `tool_loop_guardrails` section. Hermes
+    # defaults hard_stop_enabled to False, so its loop guardrail only warns and a model that
+    # does not self-correct on warnings burns every remaining turn.
+    tool_loop_guardrails: Optional[Dict[str, Any]] = None
     compression_threshold: float = 0.85
     delegation_max_iterations: int = 50
     checkpoints_enabled: bool = False
@@ -244,6 +248,8 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 "enabled": self.config.checkpoints_enabled,
             },
         }
+        if self.config.tool_loop_guardrails:
+            config["tool_loop_guardrails"] = self.config.tool_loop_guardrails
         return yaml.dump(config, default_flow_style=False)
 
     def model_post_init(self, __context: Any) -> None:
