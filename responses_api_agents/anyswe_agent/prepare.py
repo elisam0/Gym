@@ -31,8 +31,12 @@ Verified (500 tasks) needs hundreds of GB of disk. Can use --limit and iterate.
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -42,6 +46,8 @@ DEFAULT_SPLIT = "test"
 # SWE-bench publishes eval images with `__` -> `_1776_` and lowercased.
 DOCKER_IMAGE_TMPL = "docker://swebench/sweb.eval.x86_64.{tag}:latest"
 DEFAULT_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+IMAGE_BUILD_ATTEMPTS = 3
+IMAGE_BUILD_RETRY_DELAY_SECONDS = 2
 
 _THIS_DIR = Path(__file__).parent
 
@@ -98,16 +104,48 @@ def _build_one_sif(instance_id: str, sif_dir: Path, force: bool) -> tuple[str, b
     sif_path = sif_dir / f"{instance_id}.sif"
     if sif_path.exists() and not force:
         return instance_id, True, "exists"
+
     image = DOCKER_IMAGE_TMPL.format(tag=_docker_tag(instance_id))
-    proc = subprocess.run(
-        ["apptainer", "build", "--force", str(sif_path), image],
-        capture_output=True,
-        text=True,
-        errors="replace",
-    )
-    if proc.returncode != 0:
-        return instance_id, False, proc.stderr.strip()[-500:]
-    return instance_id, True, "built"
+    failures: list[str] = []
+    for attempt in range(1, IMAGE_BUILD_ATTEMPTS + 1):
+        # Build beside the final image so the completed SIF can be atomically renamed into place.
+        # Keeping each attempt in its own directory also makes all failed output easy to remove.
+        build_dir = Path(tempfile.mkdtemp(prefix=f".{instance_id}-", dir=sif_dir))
+        staged_path = build_dir / sif_path.name
+        built = False
+        try:
+            proc = subprocess.run(
+                ["apptainer", "build", "--force", str(staged_path), image],
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+            if proc.returncode != 0:
+                error = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+                failures.append(f"attempt {attempt}/{IMAGE_BUILD_ATTEMPTS}: {error[-500:]}")
+            elif not staged_path.is_file():
+                failures.append(
+                    f"attempt {attempt}/{IMAGE_BUILD_ATTEMPTS}: apptainer succeeded without producing {staged_path.name}"
+                )
+            else:
+                os.replace(staged_path, sif_path)
+                built = True
+        except OSError as exc:
+            failures.append(f"attempt {attempt}/{IMAGE_BUILD_ATTEMPTS}: {exc}")
+
+        try:
+            shutil.rmtree(build_dir)
+        except OSError as exc:
+            failures.append(f"attempt {attempt}/{IMAGE_BUILD_ATTEMPTS}: failed to clean {build_dir}: {exc}")
+            return instance_id, False, "\n".join(failures)
+
+        if built:
+            detail = "built" if attempt == 1 else f"built after {attempt} attempts"
+            return instance_id, True, detail
+        if attempt < IMAGE_BUILD_ATTEMPTS:
+            time.sleep(IMAGE_BUILD_RETRY_DELAY_SECONDS * attempt)
+
+    return instance_id, False, "\n".join(failures)
 
 
 def build_images(instance_ids: list[str], sif_dir: Path, jobs: int, force: bool) -> None:
