@@ -92,12 +92,15 @@ class ApptainerCreateConfig:
     start_timeout_s: float | None = 600
     extra_start_args: list[str] = field(default_factory=list)
     apply_resource_limits: bool = True
+    memory_limit_mib: int | None = None  # ulimit -v per exec call; prevents OOM on nodes shared across tasks
 
     def __post_init__(self) -> None:
         if self.start_timeout_s is not None and self.start_timeout_s <= 0:
             raise ValueError("create.start_timeout_s must be > 0")
         if not self.mount_point.startswith("/"):
             raise ValueError("create.mount_point must be an absolute path")
+        if self.memory_limit_mib is not None and self.memory_limit_mib <= 0:
+            raise ValueError("create.memory_limit_mib must be > 0")
 
 
 @dataclass(frozen=True)
@@ -563,6 +566,10 @@ class ApptainerProvider:
             # Need root inside the container to switch users, then su to the target.
             flags.append("--fakeroot")
             effective_command = f"su -s /bin/sh -c {shlex.quote(command)} {shlex.quote(str(user))}"
+
+        if self._create_config.memory_limit_mib is not None:
+            limit_kb = self._create_config.memory_limit_mib * 1024
+            effective_command = f"ulimit -v {limit_kb}; {effective_command}"
 
         flags += list(self._exec_config.extra_exec_args)
 
