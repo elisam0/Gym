@@ -267,15 +267,42 @@ response = asyncio.run(agent.responses(request=None, body=body))
 Path("/trajectories_mount/response.json").write_text(response.model_dump_json())
 print(f"agent finished: {{len(response.output)}} output items", flush=True)
 
+def _extract_patch(repo, max_retries=3):
+    import time
+    lock = repo / ".git" / "index.lock"
+    for attempt in range(max_retries):
+        if lock.exists():
+            print(f"[patch] stale .git/index.lock found, removing (attempt {{attempt + 1}})", flush=True)
+            try:
+                lock.unlink()
+            except OSError as e:
+                print(f"[patch] could not remove lock: {{e}}", flush=True)
+        r = subprocess.run(
+            ["bash", "-c", "git add -A && git diff --cached"],
+            capture_output=True, text=True, errors="replace", cwd=str(repo),
+        )
+        if r.returncode != 0:
+            stderr = (r.stderr or "").strip()
+            print(f"[patch] git add -A && git diff --cached failed (exit {{r.returncode}}): {{stderr[:300]}}", flush=True)
+        if r.stdout.strip():
+            print(f"[patch] {{len(r.stdout)}} chars from {{repo}} (attempt {{attempt + 1}})", flush=True)
+            return r.stdout
+        if attempt < max_retries - 1:
+            time.sleep(0.5)
+    print(f"[patch] git add -A && git diff --cached empty after {{max_retries}} attempts, falling back to git diff HEAD", flush=True)
+    r = subprocess.run(
+        ["bash", "-c", "git diff HEAD"],
+        capture_output=True, text=True, errors="replace", cwd=str(repo),
+    )
+    if r.returncode != 0:
+        print(f"[patch] git diff HEAD also failed: {{(r.stderr or '').strip()[:200]}}", flush=True)
+    return r.stdout
+
 patch = ""
 for candidate in ["/testbed", "/workspace/repo", "/app", "/root/repo"]:
     p = Path(candidate)
     if p.exists() and (p / ".git").exists():
-        patch = subprocess.run(
-            ["bash", "-c", "git add -A && git diff --cached"],
-            capture_output=True, text=True, errors="replace", cwd=str(p),
-        ).stdout
-        print(f"patch: {{len(patch)}} chars from {{p}}", flush=True)
+        patch = _extract_patch(p)
         break
 Path("/trajectories_mount/patch.diff").write_text(patch)
 """
