@@ -268,11 +268,46 @@ Path("/trajectories_mount/response.json").write_text(response.model_dump_json())
 print(f"agent finished: {{len(response.output)}} output items", flush=True)
 
 def _extract_patch(repo, max_retries=3):
+    import json
+    import os
     import time
+
+    def _lock_diagnostics(lock):
+        # Persist bounded evidence before removing a stale Git index lock.
+        commands = dict(
+            git_status=["git", "status", "--porcelain=v1"],
+            processes=["ps", "-ef"],
+            lock_users=["bash", "-c", "command -v fuser >/dev/null && fuser -v .git/index.lock || true"],
+            mount=["bash", "-c", "findmnt -T /testbed -o TARGET,SOURCE,FSTYPE,OPTIONS 2>&1 || true"],
+            kernel=["uname", "-a"],
+        )
+        evidence = dict(repo=str(repo), pid=os.getpid(), attempted_at_epoch=time.time())
+        try:
+            evidence["lock_stat"] = dict(size=lock.stat().st_size, mtime_ns=lock.stat().st_mtime_ns)
+        except OSError as e:
+            evidence["lock_stat_error"] = str(e)
+        for name, command in commands.items():
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, errors="replace", cwd=str(repo), timeout=5)
+                evidence[name] = dict(
+                    exit_code=result.returncode,
+                    stdout=(result.stdout or "")[:4000],
+                    stderr=(result.stderr or "")[:1000],
+                )
+            except Exception as e:
+                evidence[name] = dict(error=str(e))
+        out = Path("/trajectories_mount/patch_lock_diagnostics.json")
+        try:
+            out.write_text(json.dumps(evidence, indent=2, sort_keys=True))
+            print(f"[patch] lock diagnostics saved to {{out}}", flush=True)
+        except OSError as e:
+            print(f"[patch] could not save lock diagnostics: {{e}}", flush=True)
+
     lock = repo / ".git" / "index.lock"
     for attempt in range(max_retries):
         if lock.exists():
             print(f"[patch] stale .git/index.lock found, removing (attempt {{attempt + 1}})", flush=True)
+            _lock_diagnostics(lock)
             try:
                 lock.unlink()
             except OSError as e:
@@ -444,7 +479,7 @@ class GymAgentHarnessProcessor(BaseModel):
             agent_class_lower=cfg.agent_server_class.lower(),
         )
         (cfg.persistent_dir / "agent_runner.py").write_text(runner)
-        return "/agent_deps_mount/bin/python /trajectories_mount/agent_runner.py"
+        return "/agent_deps_mount/bin/python /trajectories_mount/agent_runner.py > /trajectories_mount/agent_runner_logs.log 2>&1"
 
 
 ### Agent server
