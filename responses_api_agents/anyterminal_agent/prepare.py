@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import shutil
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,35 @@ DEFAULT_TASKS_CACHE = Path.home() / ".cache" / "harbor" / "tasks"
 DEFAULT_DATASET_NAME = "terminal-bench@2.0"
 IMAGE_BUILD_ATTEMPTS = 3
 IMAGE_BUILD_RETRY_DELAY_SECONDS = 2
+
+# Most tasks' tests/test.sh installs uv via the astral.sh installer script before running
+# `uvx ...` to execute the verifier. Clusters that block/break astral.sh at verify time (e.g.
+# curl connect failures) make every such task fail verification even when the agent solved it.
+# `pip install uv` produces the same `uv`/`uvx` binaries under ~/.local/bin, so swapping the
+# install step leaves the rest of test.sh (which only invokes `uvx ...`) unaffected.
+_UV_CURL_INSTALL_RE = re.compile(
+    r"curl -LsSf https://astral\.sh/uv/[^\s]+/install\.sh \| sh\n+source \$HOME/\.local/bin/env"
+)
+_UV_PIP_INSTALL_REPLACEMENT = (
+    "python3 -m pip install --user --break-system-packages uv 2>/dev/null "
+    "|| python3 -m pip install --user uv\n"
+    'export PATH="$HOME/.local/bin:$PATH"'
+)
+
+
+def _patch_uv_install(task_dir: Path) -> bool:
+    """Replace the astral.sh curl-based uv install in a task's test.sh with a pip install.
+
+    Idempotent — safe to call on a task dir that's already patched or has no test.sh.
+    """
+    test_sh = task_dir / "tests" / "test.sh"
+    if not test_sh.exists():
+        return False
+    text = test_sh.read_text()
+    new_text, n = _UV_CURL_INSTALL_RE.subn(_UV_PIP_INSTALL_REPLACEMENT, text)
+    if n:
+        test_sh.write_text(new_text)
+    return bool(n)
 
 
 def _load_task_config(task_dir: Path) -> dict:
@@ -223,12 +253,17 @@ def build_dataset(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     rows: list[str] = []
+    patched = 0
     for td in task_dirs:
         cfg = _load_task_config(td)
         if not cfg:
             print(f"  [skip] {td.name}: task.toml missing or empty", flush=True)
             continue
+        if _patch_uv_install(td):
+            patched += 1
         rows.append(json.dumps(_to_gym_row(td, cfg)))
+    if patched:
+        print(f"Patched uv install (curl -> pip) in {patched} task(s)' test.sh", flush=True)
 
     output.write_text("\n".join(rows) + ("\n" if rows else ""))
     ids = [json.loads(r)["responses_create_params"]["metadata"]["task_name"] for r in rows]
