@@ -58,9 +58,24 @@ IMAGE_BUILD_RETRY_DELAY_SECONDS = 2
 _UV_CURL_INSTALL_RE = re.compile(
     r"curl -LsSf https://astral\.sh/uv/[^\s]+/install\.sh \| sh\n+source \$HOME/\.local/bin/env"
 )
+# v1 replacement (broken): assumed python3 + pip were already present, which many task base
+# images don't ship (the original curl installer is a self-contained binary with no python
+# dependency). Left here so _patch_uv_install can upgrade task.sh files patched with v1.
+_UV_PIP_INSTALL_REPLACEMENT_V1_RE = re.compile(
+    re.escape(
+        "python3 -m pip install --user --break-system-packages uv 2>/dev/null "
+        "|| python3 -m pip install --user uv\n"
+        'export PATH="$HOME/.local/bin:$PATH"'
+    )
+)
 _UV_PIP_INSTALL_REPLACEMENT = (
+    "if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then\n"
+    "  apt-get install -y -qq python3 python3-pip python3-venv 2>/dev/null || true\n"
+    "fi\n"
     "python3 -m pip install --user --break-system-packages uv 2>/dev/null "
-    "|| python3 -m pip install --user uv\n"
+    "|| python3 -m pip install --user uv 2>/dev/null "
+    "|| pip3 install --user --break-system-packages uv 2>/dev/null "
+    "|| pip3 install --user uv\n"
     'export PATH="$HOME/.local/bin:$PATH"'
 )
 
@@ -68,16 +83,18 @@ _UV_PIP_INSTALL_REPLACEMENT = (
 def _patch_uv_install(task_dir: Path) -> bool:
     """Replace the astral.sh curl-based uv install in a task's test.sh with a pip install.
 
-    Idempotent — safe to call on a task dir that's already patched or has no test.sh.
+    Idempotent — safe to call on a task dir that's already patched (with the current or the v1
+    replacement) or has no test.sh.
     """
     test_sh = task_dir / "tests" / "test.sh"
     if not test_sh.exists():
         return False
     text = test_sh.read_text()
-    new_text, n = _UV_CURL_INSTALL_RE.subn(_UV_PIP_INSTALL_REPLACEMENT, text)
-    if n:
+    text, n_v1 = _UV_PIP_INSTALL_REPLACEMENT_V1_RE.subn(_UV_PIP_INSTALL_REPLACEMENT, text)
+    new_text, n_curl = _UV_CURL_INSTALL_RE.subn(_UV_PIP_INSTALL_REPLACEMENT, text)
+    if n_v1 or n_curl:
         test_sh.write_text(new_text)
-    return bool(n)
+    return bool(n_v1 or n_curl)
 
 
 def _load_task_config(task_dir: Path) -> dict:
