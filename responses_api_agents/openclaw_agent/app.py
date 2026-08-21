@@ -14,12 +14,14 @@
 # limitations under the License.
 
 import asyncio
+import contextlib
 import copy
 import json
 import logging
 import os
 import shlex
 import shutil
+import signal
 from asyncio import Semaphore
 from collections.abc import Mapping
 from pathlib import Path
@@ -383,6 +385,8 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
 
     config: OpenClawAgentConfig
     sem: Semaphore = None
+    sigterm_events: set = Field(default_factory=set)
+    sigterm_handler_installed: bool = False
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # deny the interactive "message" channel so the headless agent finishes
@@ -483,6 +487,13 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
             proc.kill()
             await proc.communicate()
             raise TimeoutError(f"Timed out after {timeout}s: {shlex.join(args)}") from None
+        except asyncio.CancelledError:
+            # Cancellation (e.g. SIGTERM salvage) only stops us from awaiting the process; it does
+            # not stop the process itself. Kill it here so we never leak an orphaned child.
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.communicate()
+            raise
         return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
     @staticmethod
@@ -491,6 +502,51 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
         agent_meta = meta.get("agentMeta") if isinstance(meta, dict) else None
         session_file = agent_meta.get("sessionFile") if isinstance(agent_meta, dict) else None
         return Path(session_file) if isinstance(session_file, str) and session_file else None
+
+    @staticmethod
+    def _find_partial_session(home: Path) -> Optional[Path]:
+        """Locate OpenClaw's session file on disk when there is no completion envelope to point at
+        it, i.e. the run was cut short by a timeout. OpenClaw writes the session incrementally, so
+        the transcript up to the last completed turn is already on disk; return the most recently
+        written .jsonl under the OpenClaw home that parses to at least one message."""
+        try:
+            candidates = sorted(
+                (p for p in home.rglob("*.jsonl") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return None
+        for path in candidates:
+            try:
+                if parse_openclaw_session(path.read_text(errors="replace")):
+                    return path
+            except OSError:
+                continue
+        return None
+
+    def _install_sigterm_handler(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Install the process's SIGTERM handler once (never removed), chaining to whatever was
+        previously installed — e.g. uvicorn's graceful-shutdown handler — so it still fires.
+        loop.add_signal_handler replaces any existing handler for the signal outright, so
+        installing once per instance and fanning out to a registry of per-run Events is the only
+        way to support concurrent runs without one run's cleanup silently disabling salvage (or
+        graceful shutdown) for every other run sharing this process."""
+        if self.sigterm_handler_installed:
+            return
+        previous = signal.getsignal(signal.SIGTERM)
+
+        def _on_sigterm() -> None:
+            for event in self.sigterm_events:
+                event.set()
+            if callable(previous):
+                previous(signal.SIGTERM, None)
+
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
+            self.sigterm_handler_installed = True
+        except (NotImplementedError, RuntimeError):
+            pass  # signal handlers need the main-thread loop; fall back to timeout-only salvage
 
     async def _run_openclaw(
         self,
@@ -539,16 +595,49 @@ class OpenClawAgent(SimpleResponsesAPIAgent):
                 prompt,
                 *self.config.extra_args,
             ]
-            code, stdout, stderr = await self._run_exec(cmd, cwd=str(work_dir), env=env, timeout=self.config.timeout)
+            # Run OpenClaw, salvaging a partial transcript if the run is cut short. It can be cut
+            # short two ways: our own self.config.timeout (raises TimeoutError), or an outer
+            # harness/sandbox timeout that SIGTERMs this whole process during its grace window before
+            # SIGKILL. In the SIGTERM case a plain `finally` would not run in time and the workdir
+            # would be lost, so we stop waiting on the signal, read OpenClaw's incrementally-written
+            # session off disk, and return it. Returning quickly lets the harness still write the
+            # response before the SIGKILL, so no harness change is needed.
+            code, stdout, stderr = None, "", ""
+            loop = asyncio.get_running_loop()
+            self._install_sigterm_handler(loop)
+            sigterm_hit = asyncio.Event()
+            self.sigterm_events.add(sigterm_hit)
+            run_task = asyncio.ensure_future(
+                self._run_exec(cmd, cwd=str(work_dir), env=env, timeout=self.config.timeout)
+            )
+            try:
+                term_task = asyncio.ensure_future(sigterm_hit.wait())
+                done, _ = await asyncio.wait({run_task, term_task}, return_when=asyncio.FIRST_COMPLETED)
+                term_task.cancel()
+                if run_task in done:
+                    code, stdout, stderr = run_task.result()
+                else:
+                    LOG.warning("openclaw received SIGTERM; salvaging partial session")
+                    run_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await run_task
+            except TimeoutError:
+                LOG.warning("openclaw timed out after %ds; salvaging partial session", self.config.timeout)
+            finally:
+                self.sigterm_events.discard(sigterm_hit)
+
             if code:
                 LOG.warning("openclaw exited %d: %s", code, stderr)
-            LOG.debug("openclaw stdout (%d chars): %s", len(stdout), stdout[:2000])
+            if stdout:
+                LOG.debug("openclaw stdout (%d chars): %s", len(stdout), stdout[:2000])
 
             fallback_items, usage = parse_openclaw_output(stdout)
             envelope = _decode_last_json_dict_suffix(stdout)
 
+            # On a normal finish the envelope points at the session file; on a cut-short run there is
+            # no envelope, so fall back to locating the partial session that OpenClaw wrote to disk.
             output_items: list[Any] = []
-            session_path = self._session_file(envelope)
+            session_path = self._session_file(envelope) or self._find_partial_session(home)
             if session_path and session_path.is_file():
                 session_text = session_path.read_text(errors="replace")
                 output_items = parse_openclaw_session(session_text)
