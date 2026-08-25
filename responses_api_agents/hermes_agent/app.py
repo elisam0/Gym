@@ -168,6 +168,10 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     temperature: float | None = None
     terminal_backend: str = "local"
     terminal_timeout: int = 180
+    # How long hermes-agent waits for a silent stream before treating the call as stale, and how
+    # many consecutive stale calls it tolerates before abandoning the attempt. See model_post_init.
+    stream_stale_timeout: int = 240
+    stream_stale_giveup: int = 10
     system_prompt: Optional[str] = None
     compression_enabled: bool = True
     compression_threshold: float = 0.85
@@ -254,6 +258,17 @@ class HermesAgent(SimpleResponsesAPIAgent):
         # process-global, so multiple HermesAgent instances in one process share them
         os.environ["TERMINAL_ENV"] = self.config.terminal_backend
         os.environ["TERMINAL_TIMEOUT"] = str(self.config.terminal_timeout)
+        # An endpoint that stops answering leaves the call silent; hermes-agent kills it after the
+        # stale timeout, retries, and abandons the whole attempt after GIVEUP consecutive stalls.
+        # Both are set explicitly rather than left to default, because the defaults are chosen by
+        # is_local_endpoint(), which infers "local" from the shape of the hostname. The agent talks
+        # to this server's own address rather than to the inference endpoint, so which branch that
+        # picks is incidental, and the two branches differ by 900s against 180s per stale call.
+        #
+        # 240 rather than 180: the local-ceiling branch is guarded on the value being exactly
+        # 180.0, so an explicit 180 is indistinguishable from the default and does not pin it.
+        os.environ["HERMES_STREAM_STALE_TIMEOUT"] = str(self.config.stream_stale_timeout)
+        os.environ["HERMES_STREAM_STALE_GIVEUP"] = str(self.config.stream_stale_giveup)
 
         # Build config.yaml with config parameters
         hermes_home = tempfile.mkdtemp(prefix="hermes_agent_")
