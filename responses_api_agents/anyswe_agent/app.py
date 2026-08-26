@@ -108,6 +108,12 @@ _REPO_WORKDIR_OVERRIDES: dict[str, str] = {
     "swe-bench-pro": "/app",
 }
 
+# SWE-bench Pro publishes images under this single Docker Hub repository; a row's
+# dockerhub_tag is only the tag portion, not a full reference on its own (matches
+# resources_servers/swebench_pro/app.py's SWEBenchProResourcesServerConfig.image_repository
+# default, introduced in https://github.com/NVIDIA-NeMo/Gym/pull/2498).
+_SWE_BENCH_PRO_IMAGE_REPOSITORY = "docker.io/jefzda/sweap-images"
+
 
 def _benchmark_key(dataset_name: str) -> str:
     """Map a HuggingFace dataset name to a registered ``swe_env`` harness key.
@@ -225,14 +231,15 @@ def _is_local_image_formatter(container_formatter: Any) -> bool:
 def _resolve_swe_image(inst: Dict[str, Any], container_formatter: Any, instance_id: str) -> str:
     """Resolve the sandbox image for a task, honoring a row-provided registry tag where it fits.
 
-    Some families (e.g. SWE-bench Pro) publish a per-row, ready-to-pull image
-    (``dockerhub_tag``) that doesn't follow the SWE-bench-Verified
-    ``swebench/sweb.eval.x86_64.<tag>`` naming ``_instance_image``'s generic template assumes.
-    That row tag is used only when the configured ``container_formatter`` isn't already a
-    local-path/``.sif`` formatter (see ``_is_local_image_formatter``) — a prebuilt-SIF
-    deployment (e.g. the cluster's ``{sif_dir}/{instance_id}.sif`` convention) must keep
-    resolving from ``instance_id`` alone, since prepare-time image builds already baked the
-    row's registry tag into that local file.
+    Some families (e.g. SWE-bench Pro) publish a per-row registry tag (``dockerhub_tag``) that
+    doesn't follow the SWE-bench-Verified ``swebench/sweb.eval.x86_64.<tag>`` naming
+    ``_instance_image``'s generic template assumes. ``dockerhub_tag`` alone isn't a full image
+    reference — it's combined with the fixed repository those tags are published under
+    (``_SWE_BENCH_PRO_IMAGE_REPOSITORY``). That combined reference is used only when the
+    configured ``container_formatter`` isn't already a local-path/``.sif`` formatter (see
+    ``_is_local_image_formatter``) — a prebuilt-SIF deployment (e.g. the cluster's
+    ``{sif_dir}/{instance_id}.sif`` convention) must keep resolving from ``instance_id`` alone,
+    since prepare-time image builds already baked the row's registry tag into that local file.
 
     Args:
         inst: The task's parsed ``instance_dict``, which may carry ``dockerhub_tag``.
@@ -244,7 +251,10 @@ def _resolve_swe_image(inst: Dict[str, Any], container_formatter: Any, instance_
     """
     if _is_local_image_formatter(container_formatter):
         return _instance_image(container_formatter, instance_id)
-    return inst.get("dockerhub_tag") or _instance_image(container_formatter, instance_id)
+    dockerhub_tag = inst.get("dockerhub_tag")
+    if dockerhub_tag:
+        return f"{_SWE_BENCH_PRO_IMAGE_REPOSITORY}:{dockerhub_tag}"
+    return _instance_image(container_formatter, instance_id)
 
 
 _RUNNER_TEMPLATE = """\

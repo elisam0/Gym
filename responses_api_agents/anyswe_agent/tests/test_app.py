@@ -161,15 +161,17 @@ class TestResolveSweImage:
 
     def test_local_sif_formatter_wins_over_dockerhub_tag(self) -> None:
         img = _resolve_swe_image(
-            {"dockerhub_tag": "docker.io/jefzda/sweap-images:some-tag"},
+            {"dockerhub_tag": "some-tag"},
             "/sifs/{instance_id}.sif",
             "repo__inst-1",
         )
         assert img == "/sifs/repo__inst-1.sif"
 
     def test_dockerhub_tag_used_when_formatter_is_generic(self) -> None:
+        # dockerhub_tag is only the tag portion — it must be combined with the fixed
+        # repository SWE-bench Pro publishes images under, not used as-is.
         img = _resolve_swe_image(
-            {"dockerhub_tag": "docker.io/jefzda/sweap-images:some-tag"},
+            {"dockerhub_tag": "some-tag"},
             "docker://swebench/sweb.eval.x86_64.{instance_id}",
             "repo__inst-1",
         )
@@ -200,7 +202,7 @@ class TestBuildSweTask:
             "base_commit": "deadbeef",
             "fail_to_pass": ["t::a"],
             "pass_to_pass": ["t::b"],
-            "dockerhub_tag": "docker.io/jefzda/sweap-images:repo__inst-1",
+            "dockerhub_tag": "repo__inst-1",
         }
         problem_info = _problem_info(
             instance_id="repo__inst-1",
