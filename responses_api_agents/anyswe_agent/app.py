@@ -147,10 +147,7 @@ def _build_swetask(problem_info: Dict[str, Any], *, flat_eval: bool = True) -> S
     )
     benchmark = _benchmark_key(problem_info.get("dataset_name", ""))
     instance_id = problem_info["instance_id"]
-    # SWE-bench Pro publishes a ready-to-pull image per row (dockerhub_tag) rather than
-    # following the SWE-bench-Verified {instance_id}-templated naming convention, so a
-    # row-provided tag always wins over the generic formatter-based resolution.
-    image = inst.get("dockerhub_tag") or _instance_image(problem_info.get("container_formatter"), instance_id)
+    image = _resolve_swe_image(inst, problem_info.get("container_formatter"), instance_id)
 
     def _as_list(v: Any) -> list[str]:
         if isinstance(v, str):
@@ -205,6 +202,49 @@ def _instance_image(container_formatter: Any, instance_id: str) -> str:
     if ":" not in image.rsplit("/", 1)[-1]:
         image += ":latest"
     return image
+
+
+def _is_local_image_formatter(container_formatter: Any) -> bool:
+    """Report whether a formatter resolves to an on-disk image, not a registry pull.
+
+    Mirrors the local-path branch of ``_instance_image`` (``.sif`` suffix or a
+    ``/``/``.``-rooted path): those formatters already resolve deterministically from
+    ``instance_id`` alone (e.g. pre-built SIFs at ``{sif_dir}/{instance_id}.sif``), so a
+    row-provided registry tag must never override them.
+
+    Args:
+        container_formatter: The configured formatter string (or list).
+
+    Returns:
+        bool: ``True`` if the formatter is a local-path/``.sif`` style formatter.
+    """
+    fmt = container_formatter[0] if isinstance(container_formatter, list) else container_formatter
+    return bool(fmt) and (fmt.endswith(".sif") or fmt.startswith(("/", ".")))
+
+
+def _resolve_swe_image(inst: Dict[str, Any], container_formatter: Any, instance_id: str) -> str:
+    """Resolve the sandbox image for a task, honoring a row-provided registry tag where it fits.
+
+    Some families (e.g. SWE-bench Pro) publish a per-row, ready-to-pull image
+    (``dockerhub_tag``) that doesn't follow the SWE-bench-Verified
+    ``swebench/sweb.eval.x86_64.<tag>`` naming ``_instance_image``'s generic template assumes.
+    That row tag is used only when the configured ``container_formatter`` isn't already a
+    local-path/``.sif`` formatter (see ``_is_local_image_formatter``) — a prebuilt-SIF
+    deployment (e.g. the cluster's ``{sif_dir}/{instance_id}.sif`` convention) must keep
+    resolving from ``instance_id`` alone, since prepare-time image builds already baked the
+    row's registry tag into that local file.
+
+    Args:
+        inst: The task's parsed ``instance_dict``, which may carry ``dockerhub_tag``.
+        container_formatter: The configured formatter string (or list).
+        instance_id: The benchmark instance id.
+
+    Returns:
+        str: The resolved image reference (local path or registry tag).
+    """
+    if _is_local_image_formatter(container_formatter):
+        return _instance_image(container_formatter, instance_id)
+    return inst.get("dockerhub_tag") or _instance_image(container_formatter, instance_id)
 
 
 _RUNNER_TEMPLATE = """\

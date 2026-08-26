@@ -30,6 +30,7 @@ from responses_api_agents.anyswe_agent.app import (
     _benchmark_key,
     _build_swetask,
     _instance_image,
+    _resolve_swe_image,
 )
 
 
@@ -127,6 +128,9 @@ class TestBenchmarkKey:
     def test_unknown_defaults_to_swe_bench(self) -> None:
         assert _benchmark_key("some/unknown-dataset") == "swe-bench"
 
+    def test_swe_bench_pro(self) -> None:
+        assert _benchmark_key("ScaleAI/SWE-bench_Pro") == "swe-bench-pro"
+
 
 class TestInstanceImage:
     def test_docker_scheme_stripped_and_tag_mangled(self) -> None:
@@ -149,6 +153,33 @@ class TestInstanceImage:
         assert img == "/sifs/sweb.eval.x86_64.astropy__astropy-13453.sif"
 
 
+class TestResolveSweImage:
+    """A row's registry tag (e.g. SWE-bench Pro's dockerhub_tag) must never override a
+    prebuilt-SIF deployment (the cluster's {sif_dir}/{instance_id}.sif convention), since
+    that local file was already built from the row's tag at prepare time; it should only be
+    used as a fallback when the configured formatter isn't already a local image path."""
+
+    def test_local_sif_formatter_wins_over_dockerhub_tag(self) -> None:
+        img = _resolve_swe_image(
+            {"dockerhub_tag": "docker.io/jefzda/sweap-images:some-tag"},
+            "/sifs/{instance_id}.sif",
+            "repo__inst-1",
+        )
+        assert img == "/sifs/repo__inst-1.sif"
+
+    def test_dockerhub_tag_used_when_formatter_is_generic(self) -> None:
+        img = _resolve_swe_image(
+            {"dockerhub_tag": "docker.io/jefzda/sweap-images:some-tag"},
+            "docker://swebench/sweb.eval.x86_64.{instance_id}",
+            "repo__inst-1",
+        )
+        assert img == "docker.io/jefzda/sweap-images:some-tag"
+
+    def test_falls_back_to_instance_image_without_dockerhub_tag(self) -> None:
+        img = _resolve_swe_image({}, None, "django__django-12345")
+        assert img == _instance_image(None, "django__django-12345")
+
+
 class TestBuildSweTask:
     def test_unpacks_instance_dict(self) -> None:
         task = _build_swetask(_problem_info())
@@ -163,6 +194,24 @@ class TestBuildSweTask:
     def test_flat_eval_flag_is_configurable(self) -> None:
         assert _build_swetask(_problem_info()).metadata["flat_eval"] is True
         assert _build_swetask(_problem_info(), flat_eval=False).metadata["flat_eval"] is False
+
+    def test_swe_bench_pro_workdir_and_image(self) -> None:
+        inst = {
+            "base_commit": "deadbeef",
+            "fail_to_pass": ["t::a"],
+            "pass_to_pass": ["t::b"],
+            "dockerhub_tag": "docker.io/jefzda/sweap-images:repo__inst-1",
+        }
+        problem_info = _problem_info(
+            instance_id="repo__inst-1",
+            dataset_name="ScaleAI/SWE-bench_Pro",
+            container_formatter="docker://swebench/sweb.eval.x86_64.{instance_id}",
+            instance_dict=json.dumps(inst),
+        )
+        task = _build_swetask(problem_info)
+        assert task.benchmark == "swe-bench-pro"
+        assert task.repo_workdir == "/app"
+        assert task.image == "docker.io/jefzda/sweap-images:repo__inst-1"
 
 
 class TestSetupScriptsExist:
