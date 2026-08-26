@@ -98,8 +98,15 @@ def _safe_config_json(params: "AnySweInstanceConfig", indent: Optional[int] = No
 _BENCHMARK_KEYS: list[Tuple[str, str]] = [
     ("R2E-Gym", "r2e-gym"),
     ("SWE-bench_Multilingual", "swe-bench-multilingual"),
+    ("SWE-bench_Pro", "swe-bench-pro"),
     ("SWE-bench", "swe-bench"),
 ]
+
+# Task families whose repo checkout lives somewhere other than the SWE-bench-standard
+# /testbed (e.g. SWE-bench Pro's upstream evaluator always checks out to /app).
+_REPO_WORKDIR_OVERRIDES: dict[str, str] = {
+    "swe-bench-pro": "/app",
+}
 
 
 def _benchmark_key(dataset_name: str) -> str:
@@ -140,7 +147,10 @@ def _build_swetask(problem_info: Dict[str, Any], *, flat_eval: bool = True) -> S
     )
     benchmark = _benchmark_key(problem_info.get("dataset_name", ""))
     instance_id = problem_info["instance_id"]
-    image = _instance_image(problem_info.get("container_formatter"), instance_id)
+    # SWE-bench Pro publishes a ready-to-pull image per row (dockerhub_tag) rather than
+    # following the SWE-bench-Verified {instance_id}-templated naming convention, so a
+    # row-provided tag always wins over the generic formatter-based resolution.
+    image = inst.get("dockerhub_tag") or _instance_image(problem_info.get("container_formatter"), instance_id)
 
     def _as_list(v: Any) -> list[str]:
         if isinstance(v, str):
@@ -154,7 +164,7 @@ def _build_swetask(problem_info: Dict[str, Any], *, flat_eval: bool = True) -> S
         instance_id=instance_id,
         image=image,
         base_commit=inst.get("base_commit"),
-        repo_workdir="/testbed",
+        repo_workdir=_REPO_WORKDIR_OVERRIDES.get(benchmark, "/testbed"),
         test_patch=inst.get("test_patch", ""),
         fail_to_pass=_as_list(inst.get("FAIL_TO_PASS") or inst.get("fail_to_pass")),
         pass_to_pass=_as_list(inst.get("PASS_TO_PASS") or inst.get("pass_to_pass")),

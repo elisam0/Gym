@@ -247,6 +247,7 @@ def register_harness(harness: SweTaskHarness, *, override: bool = False) -> None
 # so callers can pass a raw ``dataset_name`` (e.g. "princeton-nlp/SWE-bench_Verified").
 _HF_NAME_ALIASES: list[tuple[str, str]] = [
     ("SWE-bench_Multilingual", "swe-bench-multilingual"),
+    ("SWE-bench_Pro", "swe-bench-pro"),
     ("R2E-Gym", "r2e-gym"),
     ("SWE-rebench", "swe-rebench"),
     ("SWE-bench", "swe-bench"),

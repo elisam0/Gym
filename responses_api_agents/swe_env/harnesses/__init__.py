@@ -18,15 +18,16 @@ Every built-in family is flat and host-graded: it runs the instance's evaluation
 inside a single sandbox, parses the output host-side, and works on any
 exec-capable provider (including docker). The registered families are
 ``swe-bench-ext``, ``nv-internal-1``, ``swe-rebench``, ``swe-bench``,
-``swe-bench-multilingual``, and ``r2e-gym``. (The previously apptainer-only nested
-grading for ``swe-bench``/``swe-bench-multilingual``/``r2e-gym`` was removed when
-PR #1694 took ownership of the apptainer provider.)
+``swe-bench-multilingual``, ``r2e-gym``, and ``swe-bench-pro``. (The previously
+apptainer-only nested grading for ``swe-bench``/``swe-bench-multilingual``/``r2e-gym``
+was removed when PR #1694 took ownership of the apptainer provider.)
 """
 
 from responses_api_agents.swe_env.harness import list_harnesses, register_harness
 from responses_api_agents.swe_env.harnesses.nv_internal import NVInternalHarness
 from responses_api_agents.swe_env.harnesses.r2egym import R2EGymHarness
 from responses_api_agents.swe_env.harnesses.swe_bench_ext import SweBenchExtHarness
+from responses_api_agents.swe_env.harnesses.swe_bench_pro import SweBenchProHarness
 from responses_api_agents.swe_env.harnesses.swe_rebench import SweRebenchHarness
 from responses_api_agents.swe_env.harnesses.swebench import SweBenchHarness
 
@@ -45,6 +46,7 @@ def register_builtin_harnesses() -> None:
         SweBenchHarness("swe-bench"),
         SweBenchHarness("swe-bench-multilingual"),
         R2EGymHarness(),
+        SweBenchProHarness(),
     ]
     existing = set(list_harnesses())
     for harness in builtins:
@@ -60,6 +62,7 @@ __all__ = [
     "R2EGymHarness",
     "SweBenchExtHarness",
     "SweBenchHarness",
+    "SweBenchProHarness",
     "SweRebenchHarness",
     "register_builtin_harnesses",
 ]
