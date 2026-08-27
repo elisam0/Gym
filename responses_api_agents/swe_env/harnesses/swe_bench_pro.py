@@ -208,7 +208,7 @@ class SweBenchProHarness(SweTaskHarness):
             image=task.image,
             workdir=task.repo_workdir,
             ttl_s=task.metadata.get("ttl_s", 1800),
-            ready_timeout_s=task.metadata.get("ready_timeout_s", 600),
+            ready_timeout_s=task.metadata.get("ready_timeout_s", 1200),
             env={"GIT_PAGER": "cat"},
             metadata={
                 "instance_id": task.instance_id[:63],
