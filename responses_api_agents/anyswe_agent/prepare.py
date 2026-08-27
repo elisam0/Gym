@@ -17,19 +17,19 @@ import sys
 from pathlib import Path
 
 
-HF_DATASET = "princeton-nlp/SWE-bench_Verified"
+DEFAULT_HF_DATASET = "princeton-nlp/SWE-bench_Verified"
 DEFAULT_SPLIT = "test"
 
 _THIS_DIR = Path(__file__).parent
 
 
-def _to_gym_row(inst: dict, split: str) -> dict:
+def _to_gym_row(inst: dict, split: str, dataset_name: str = DEFAULT_HF_DATASET) -> dict:
     return {
         "responses_create_params": {
             "input": [],
             "metadata": {
                 "instance_id": inst["instance_id"],
-                "dataset_name": HF_DATASET,
+                "dataset_name": dataset_name,
                 "split": split,
                 "problem_statement": inst["problem_statement"],
                 "instance_dict": json.dumps(inst),
@@ -38,19 +38,25 @@ def _to_gym_row(inst: dict, split: str) -> dict:
     }
 
 
-def build_dataset(output: Path, split: str, limit: int | None, instance_id: str | None) -> None:
+def build_dataset(
+    output: Path,
+    split: str,
+    limit: int | None,
+    instance_id: str | None,
+    dataset_name: str,
+) -> None:
     try:
         from datasets import load_dataset
     except ImportError:
         sys.exit("`datasets` is required for dataset prep: pip install datasets")
 
-    print(f"Loading {HF_DATASET} [{split}]...", flush=True)
-    rows = load_dataset(HF_DATASET, split=split)
+    print(f"Loading {dataset_name} [{split}]...", flush=True)
+    rows = load_dataset(dataset_name, split=split)
 
     if instance_id:
         rows = [r for r in rows if r["instance_id"] == instance_id]
         if not rows:
-            sys.exit(f"instance_id {instance_id!r} not found in {HF_DATASET}")
+            sys.exit(f"instance_id {instance_id!r} not found in {dataset_name}")
     elif limit:
         rows = rows.select(range(min(limit, len(rows))))
 
@@ -59,20 +65,21 @@ def build_dataset(output: Path, split: str, limit: int | None, instance_id: str 
     with output.open("w") as f:
         for inst in rows:
             inst = dict(inst)
-            f.write(json.dumps(_to_gym_row(inst, split)) + "\n")
+            f.write(json.dumps(_to_gym_row(inst, split, dataset_name)) + "\n")
             count += 1
     print(f"Wrote {count} rows -> {output}", flush=True)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--dataset-name", default=DEFAULT_HF_DATASET, help="Hugging Face dataset to load")
     p.add_argument("--output", type=Path, default=_THIS_DIR / "data" / "swebench_verified.jsonl")
     p.add_argument("--split", default=DEFAULT_SPLIT)
     p.add_argument("--limit", type=int, default=None, help="Only the first N instances (default: all)")
     p.add_argument("--instance-id", default=None, help="Only this instance")
     args = p.parse_args()
 
-    build_dataset(args.output, args.split, args.limit, args.instance_id)
+    build_dataset(args.output, args.split, args.limit, args.instance_id, args.dataset_name)
 
 
 if __name__ == "__main__":
