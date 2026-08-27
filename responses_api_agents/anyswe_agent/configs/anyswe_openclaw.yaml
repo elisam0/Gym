@@ -29,6 +29,7 @@ anyswe_openclaw:
       swebench_agent_timeout: 2100
       swebench_tests_timeout: 1800
       concurrency: 2
+      agent_runtime_source: auto
 
       model_server:
         name: policy_model
