@@ -350,6 +350,17 @@ class SweBenchProHarness(SweTaskHarness):
             test_results = None
 
         if not isinstance(test_results, dict):
+            # Same visibility gap as the run_eval timeout branch: anyswe_agent's own metrics
+            # schema (shared across every family) has no field to carry tests_status through
+            # to the published rollout/metrics JSON, so print it -- this is currently the
+            # dominant error_kind across a live SWE-bench Pro batch, and without this there is
+            # no way to tell "parser crashed" from "test command never ran" from the outside.
+            print(
+                f"[swe-bench-pro] {task.instance_id}: grade() got non-JSON/missing output.json "
+                f"(patch_applied={artifacts.patch_applied}). Raw output.json (first 500 chars): "
+                f"{output_json[:500]!r}\nLast ~2000 chars of captured stdout/stderr:\n{artifacts.test_output[-2000:]}",
+                flush=True,
+            )
             return SweEvalReport(
                 instance_id=task.instance_id,
                 patch_exists=bool(task.model_patch),
