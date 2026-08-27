@@ -159,6 +159,7 @@ class AnySweAgentConfig(BaseResponsesAPIAgentConfig):
     swebench_tests_timeout: int = 1800
     swebench_agent_timeout: int = 2700
     concurrency: int = 256
+    results_dir: Optional[Path] = None
 
 
 class AnySweServerConfig(BaseModel):
@@ -196,7 +197,7 @@ class GymAgentHarnessProcessor(BaseModel):
         return self.config.agent_server_module.split(".")[-2]
 
     def setup(self) -> Path:
-        deps_dir = Path(__file__).parent / f"anyswe_{self._agent_key}_deps"
+        deps_dir = Path(__file__).parent / "deps" / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
         scripts = Path(__file__).parent / "setup_scripts"
         script = scripts / f"{self._agent_key}_deps.sh"
@@ -210,6 +211,7 @@ class GymAgentHarnessProcessor(BaseModel):
         if sentinel.exists() and sentinel.read_text().strip() == recipe:
             return deps_dir
 
+        deps_dir.parent.mkdir(parents=True, exist_ok=True)
         lock = deps_dir.parent / f".{deps_dir.name}.lockdir"
         while True:
             try:
@@ -282,11 +284,19 @@ class AnySweAgent(SimpleResponsesAPIAgent):
                 agent_deps_archive = Path(self.config.agent_runtime_source).expanduser()
                 if not agent_deps_archive.is_file():
                     raise ValueError(f"agent runtime archive not found: {agent_deps_archive}")
-        session_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        results_dir = workspace / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        base_results_dir = self.config.results_dir
+        if base_results_dir is None:
+            session_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+            base_results_dir = results_dir / f"anyswe_results_{session_id}"
+        else:
+            session_id = base_results_dir.name
+        base_results_dir.mkdir(parents=True, exist_ok=True)
 
         self._server = AnySweServerConfig(
             run_session_id=session_id,
-            base_results_dir=workspace / f"anyswe_results_{session_id}",
+            base_results_dir=base_results_dir,
             model_server_url=model_url,
             agent_deps_archive=agent_deps_archive,
             agent_deps_url=agent_deps_url,
