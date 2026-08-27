@@ -199,13 +199,14 @@ class GymAgentHarnessProcessor(BaseModel):
     def setup(self) -> Path:
         deps_dir = Path(__file__).parent / "deps" / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
-        scripts = Path(__file__).parent / "setup_scripts"
-        script = scripts / f"{self._agent_key}_deps.sh"
+        agent_dir = PARENT_DIR / "responses_api_agents" / self._agent_key
+        script = agent_dir / "scripts" / f"{self._agent_key}_deps.sh"
+        shared = Path(__file__).parent / "setup_scripts" / "_portable_python.sh"
         sources = (
             script,
-            scripts / "_portable_python.sh",
-            PARENT_DIR / "responses_api_agents" / self._agent_key / "requirements.txt",
-            *sorted((PARENT_DIR / "responses_api_agents" / self._agent_key).glob("*.py")),
+            shared,
+            agent_dir / "requirements.txt",
+            *sorted(agent_dir.glob("*.py")),
         )
         recipe = hashlib.sha256(b"".join(path.read_bytes() for path in sources if path.exists())).hexdigest()
         if sentinel.exists() and sentinel.read_text().strip() == recipe:
@@ -229,7 +230,10 @@ class GymAgentHarnessProcessor(BaseModel):
             if not script.exists():
                 raise ValueError(f"missing agent runtime setup script: {script}")
             deps_dir.mkdir(parents=True, exist_ok=True)
-            proc = Popen(f"DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}", shell=True)
+            proc = Popen(
+                f"PORTABLE_PYTHON_SH={shared} DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}",
+                shell=True,
+            )
             if proc.wait() != 0:
                 raise RuntimeError(f"agent runtime setup failed: {script}")
             sentinel.write_text(recipe)
