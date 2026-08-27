@@ -51,11 +51,13 @@ class _FakeProvider:
         files: dict[str, str] | None = None,
         exec_rc: int = 0,
         entryscript_error_type: str | None = None,
+        cat_stderr_banner: str = "",
         **_,
     ):
         self._files = dict(files or {})
         self._exec_rc = exec_rc
         self._entryscript_error_type = entryscript_error_type
+        self._cat_stderr_banner = cat_stderr_banner
         self.uploaded: dict[str, str] = {}
 
     async def create(self, spec):
@@ -64,7 +66,9 @@ class _FakeProvider:
     async def exec(self, handle, command, *, cwd=None, env=None, timeout_s=None, user=None):
         if command.startswith("cat "):
             path = command[len("cat ") :].strip()
-            return SandboxExecResult(stdout=self._files.get(path, ""), stderr="", return_code=0)
+            return SandboxExecResult(
+                stdout=self._files.get(path, ""), stderr=self._cat_stderr_banner, return_code=0
+            )
         if command.startswith("bash ") and self._entryscript_error_type is not None:
             return SandboxExecResult(stdout="", stderr="", return_code=-1, error_type=self._entryscript_error_type)
         return SandboxExecResult(stdout="", stderr="", return_code=self._exec_rc)
@@ -283,6 +287,41 @@ def test_grade_masks_on_invalid_json_output():
     report = asyncio.run(run())
     assert report.error_kind == "eval_error"
     assert report.resolved is False
+
+
+def test_run_eval_ignores_stderr_noise_on_file_reads():
+    # Some sandbox providers print their own informational messages to stderr on every exec
+    # call. run_eval reads workspace files back via `cat`, so it must key off stdout only --
+    # combining stdout+stderr would splice that noise into the JSON output / patch-apply-status
+    # text and corrupt both.
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
+
+    async def run():
+        harness = SweBenchProHarness()
+        task = _task()
+        files = {
+            "/workspace/stdout.log": "ok\n",
+            "/workspace/stderr.log": "",
+            "/workspace/output.json": _PASSING_OUTPUT,
+            "/workspace/patch_apply_status": "0\n",
+        }
+        env = await AsyncSweEnvironment.start(
+            {
+                "fake-swebench-pro": {
+                    "files": files,
+                    "cat_stderr_banner": "INFO:    some sandbox-provider diagnostic message\n",
+                }
+            },
+            harness.build_spec(task),
+        )
+        artifacts = await harness.run_eval(env, task)
+        return harness.grade(task, artifacts)
+
+    report = asyncio.run(run())
+    assert report.error_kind is None
+    assert report.patch_applied is True
+    assert report.resolved is True
+    assert reward_from_report(report) == 1.0
 
 
 def test_patch_not_applied_gates_resolved_false_even_if_tests_pass():

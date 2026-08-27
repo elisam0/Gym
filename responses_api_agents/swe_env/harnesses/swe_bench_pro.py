@@ -287,8 +287,8 @@ class SweBenchProHarness(SweTaskHarness):
             # a plain sandbox failure.
             partial_stdout = partial_stderr = ""
             try:
-                partial_stdout = (await env.execute(f"cat {_STDOUT_PATH}", cwd="/app")).get("output", "")
-                partial_stderr = (await env.execute(f"cat {_STDERR_PATH}", cwd="/app")).get("output", "")
+                partial_stdout = (await env.execute(f"cat {_STDOUT_PATH}", cwd="/app")).get("stdout", "")
+                partial_stderr = (await env.execute(f"cat {_STDERR_PATH}", cwd="/app")).get("stdout", "")
             except Exception:
                 pass
             test_output = result.get("output", "")
@@ -307,10 +307,14 @@ class SweBenchProHarness(SweTaskHarness):
             )
             return EvalArtifacts(test_output=test_output, return_code=-1, raw={"error_type": error_type})
 
-        stdout_log = (await env.execute(f"cat {_STDOUT_PATH}", cwd="/app")).get("output", "")
-        stderr_log = (await env.execute(f"cat {_STDERR_PATH}", cwd="/app")).get("output", "")
-        output_json = (await env.execute(f"cat {_OUTPUT_PATH}", cwd="/app")).get("output", "")
-        patch_status = (await env.execute(f"cat {_PATCH_STATUS_PATH}", cwd="/app")).get("output", "").strip()
+        # Read via "stdout" specifically, not the combined "output": some sandbox providers emit
+        # their own informational messages on stderr for every exec call, which would otherwise
+        # get spliced into file contents here and corrupt the patch-apply-status comparison and
+        # the JSON parse below.
+        stdout_log = (await env.execute(f"cat {_STDOUT_PATH}", cwd="/app")).get("stdout", "")
+        stderr_log = (await env.execute(f"cat {_STDERR_PATH}", cwd="/app")).get("stdout", "")
+        output_json = (await env.execute(f"cat {_OUTPUT_PATH}", cwd="/app")).get("stdout", "")
+        patch_status = (await env.execute(f"cat {_PATCH_STATUS_PATH}", cwd="/app")).get("stdout", "").strip()
 
         return EvalArtifacts(
             test_output=f"STDOUT:\n{stdout_log}\n\nSTDERR:\n{stderr_log}",
