@@ -45,9 +45,17 @@ class _FakeProvider:
 
     name = "fake-swebench-pro"
 
-    def __init__(self, *, files: dict[str, str] | None = None, exec_rc: int = 0, **_):
+    def __init__(
+        self,
+        *,
+        files: dict[str, str] | None = None,
+        exec_rc: int = 0,
+        entryscript_error_type: str | None = None,
+        **_,
+    ):
         self._files = dict(files or {})
         self._exec_rc = exec_rc
+        self._entryscript_error_type = entryscript_error_type
         self.uploaded: dict[str, str] = {}
 
     async def create(self, spec):
@@ -57,6 +65,8 @@ class _FakeProvider:
         if command.startswith("cat "):
             path = command[len("cat ") :].strip()
             return SandboxExecResult(stdout=self._files.get(path, ""), stderr="", return_code=0)
+        if command.startswith("bash ") and self._entryscript_error_type is not None:
+            return SandboxExecResult(stdout="", stderr="", return_code=-1, error_type=self._entryscript_error_type)
         return SandboxExecResult(stdout="", stderr="", return_code=self._exec_rc)
 
     async def upload_file(self, handle, local_path, remote_path):
@@ -228,6 +238,30 @@ def test_grade_masks_on_infra_error():
     assert report.error_kind == "timeout"
     assert report.resolved is False
     assert reward_from_report(report) == 0.0
+
+
+def test_run_eval_timeout_captures_partial_log_output():
+    # run_script.sh redirects its own stdout/stderr into files (see _create_entryscript), so
+    # a genuine timeout partway through it must still be diagnosable: run_eval should read
+    # those files back best-effort rather than return an empty test_output.
+    from responses_api_agents.swe_env.sandbox import AsyncSweEnvironment
+
+    async def run():
+        harness = SweBenchProHarness()
+        task = _task()
+        files = {
+            "/workspace/stdout.log": "Waiting for Redis to start...\n" * 5,
+            "/workspace/stderr.log": "",
+        }
+        env = await AsyncSweEnvironment.start(
+            {"fake-swebench-pro": {"files": files, "entryscript_error_type": "timeout"}},
+            harness.build_spec(task),
+        )
+        return await harness.run_eval(env, task)
+
+    artifacts = asyncio.run(run())
+    assert artifacts.raw["error_type"] == "timeout"
+    assert "Waiting for Redis to start..." in artifacts.test_output
 
 
 def test_grade_masks_on_invalid_json_output():

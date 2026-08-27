@@ -277,7 +277,35 @@ class SweBenchProHarness(SweTaskHarness):
         )
         error_type = result.get("error_type")
         if error_type in ("sandbox", "timeout"):
-            return EvalArtifacts(test_output=result.get("output", ""), return_code=-1, raw={"error_type": error_type})
+            # The entryscript redirects run_script.sh's own stdout/stderr into files
+            # (see _create_entryscript), so `result["output"]` -- the *outer* bash
+            # command's own stdout -- is empty even on a genuine hang partway through
+            # run_script.sh. Best-effort read those files back: the sandbox may still
+            # be reachable after only the timed-out command was killed, and whatever
+            # was flushed before the kill is the only way to tell a hang in
+            # prepare_test_environment (e.g. a service that never came up) apart from
+            # a plain sandbox failure.
+            partial_stdout = partial_stderr = ""
+            try:
+                partial_stdout = (await env.execute(f"cat {_STDOUT_PATH}", cwd="/app")).get("output", "")
+                partial_stderr = (await env.execute(f"cat {_STDERR_PATH}", cwd="/app")).get("output", "")
+            except Exception:
+                pass
+            test_output = result.get("output", "")
+            if partial_stdout or partial_stderr:
+                test_output = f"{test_output}\n\nPARTIAL STDOUT (before {error_type}):\n{partial_stdout}\n\nPARTIAL STDERR:\n{partial_stderr}"
+            # anyswe_agent's own metrics schema (shared across every family) has no field for
+            # test output, so it would otherwise be silently dropped before reaching the
+            # published rollout/metrics JSON. Print it instead so it lands in the run's own
+            # (already-published) console log -- the only way to see *where* a grading timeout
+            # actually stalled (e.g. a service wait-loop that never got satisfied) versus
+            # guessing from the outside.
+            print(
+                f"[swe-bench-pro] {task.instance_id}: run_eval hit {error_type!r}. "
+                f"Last ~2000 chars of captured output:\n{test_output[-2000:]}",
+                flush=True,
+            )
+            return EvalArtifacts(test_output=test_output, return_code=-1, raw={"error_type": error_type})
 
         stdout_log = (await env.execute(f"cat {_STDOUT_PATH}", cwd="/app")).get("output", "")
         stderr_log = (await env.execute(f"cat {_STDERR_PATH}", cwd="/app")).get("output", "")
