@@ -78,6 +78,7 @@ from urllib.parse import quote
 
 
 HF_DATASET_DEFAULT = "princeton-nlp/SWE-bench_Verified"
+HF_DATASET = HF_DATASET_DEFAULT  # backward-compat alias
 DEFAULT_SPLIT = "test"
 # SWE-bench publishes eval images with `__` -> `_1776_` and lowercased.
 DOCKER_IMAGE_TMPL = "docker://swebench/sweb.eval.x86_64.{tag}:latest"
