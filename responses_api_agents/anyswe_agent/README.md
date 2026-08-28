@@ -28,6 +28,10 @@ Prepare the dataset, start the environment, and collect rollouts:
 
 ```bash
 python3 responses_api_agents/anyswe_agent/prepare.py --limit 5
+# Or choose another compatible Hugging Face dataset:
+python3 responses_api_agents/anyswe_agent/prepare.py \
+  --dataset-name <dataset_name> \
+  --output responses_api_agents/anyswe_agent/data/custom.jsonl
 
 gym env start \
   --config responses_api_agents/anyswe_agent/configs/anyswe_hermes.yaml \
@@ -41,8 +45,10 @@ gym eval run --no-serve \
   --limit 5
 ```
 
-`prepare.py` writes `data/swebench_verified.jsonl`. Each row must resolve to a
-task image through its `image` field or `container_formatter`.
+By default, `prepare.py` writes `data/swebench_verified.jsonl` from
+`princeton-nlp/SWE-bench_Verified`. Pass `--dataset-name` and `--output` to prepare
+another compatible dataset. Each row must resolve to a task image through its
+`image` field or `container_formatter`.
 
 ## Agents
 

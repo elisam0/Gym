@@ -255,6 +255,14 @@ class TestExampleData:
         row = _to_gym_row({"instance_id": "repo__repo-1", "problem_statement": "Fix it"}, "test")
         assert set(row["responses_create_params"]) == {"input", "metadata"}
 
+    def test_prepared_rows_preserve_selected_dataset(self) -> None:
+        row = _to_gym_row(
+            {"instance_id": "repo__repo-1", "problem_statement": "Fix it"},
+            "test",
+            "SWE-bench_Multilingual",
+        )
+        assert row["responses_create_params"]["metadata"]["dataset_name"] == "SWE-bench_Multilingual"
+
     def test_example_jsonl_parses(self) -> None:
         example = Path(__file__).parent.parent / "data" / "example.jsonl"
         rows = [json.loads(line) for line in example.read_text().splitlines() if line.strip()]
