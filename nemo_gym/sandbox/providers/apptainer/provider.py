@@ -55,6 +55,8 @@ SANDBOX_RUNTIME_RETURN_CODE = 125
 # failed to run the command. Apptainer prefixes its own fatal errors with "FATAL:".
 APPTAINER_RUNTIME_ERROR_MARKERS = ("fatal:", "no instance found", "instance not found", "does not exist")
 APPTAINER_MISSING_INSTANCE_MARKERS = ("no instance found", "instance not found", "does not exist")
+# Matches apptainer's error when cgroups v2 delegation is unavailable (instance start hard-fails).
+APPTAINER_CGROUPS_UNAVAILABLE_MARKER = "cannot use cgroups"
 APPTAINER_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 APPTAINER_ENV_FILE_READONLY = frozenset({"EUID", "GID", "HOME", "IFS", "OPTIND", "PWD", "UID"})
 
@@ -154,6 +156,9 @@ class _ApptainerInstance:
     mount_point: str  # where the folder shows up inside
     image: str  # what it was built from
     env: dict[str, str] = field(default_factory=dict)
+    # Mirrors spec.resources.memory_mib. exec() prepends `ulimit -v` as a memory backstop,
+    # unconditionally -- regardless of whether the `--memory` cgroup flag was applied.
+    memory_mib: int | None = None
 
 
 def _resource_flags(resources: SandboxResources) -> list[str]:
@@ -206,6 +211,10 @@ def _is_runtime_failure(stderr: str) -> bool:
 def _is_missing_instance(stderr: str) -> bool:
     low = stderr.lower()
     return any(marker in low for marker in APPTAINER_MISSING_INSTANCE_MARKERS)
+
+
+def _is_cgroups_unavailable(stderr: str) -> bool:
+    return APPTAINER_CGROUPS_UNAVAILABLE_MARKER in stderr.lower()
 
 
 def _coerce_binds(value: Any) -> list[str]:
@@ -390,9 +399,9 @@ class ApptainerProvider:
         4. Build argv: [binary, "instance", "start", <--bind staging:mount_point>,
            <config default_binds>, <spec.provider_options["binds"]>, <--env-file ...>,
            _resource_flags(spec.resources), <extra_start_args>, image, name].
-        5. await self._run(argv, timeout_s=self._create_config.start_timeout_s);
-           on non-zero return, clean up the staging dir and raise
-           ApptainerCreateError(stderr).
+        5. await self._run(argv, timeout_s=self._create_config.start_timeout_s). If it fails
+           because cgroups are unavailable, retry once without the CPU/memory flags. Any other
+           non-zero return cleans up the staging dir and raises ApptainerCreateError(stderr).
         6. Build the handle:
            SandboxHandle(sandbox_id=name, provider_name=self.name,
                raw=_ApptainerInstance(name, staging_dir, mount_point, image)).
@@ -422,36 +431,45 @@ class ApptainerProvider:
         )  # create a new empty temp directory on the host and returns that path
         name = INSTANCE_NAME_PREFIX + uuid.uuid4().hex
 
-        # build the `apptainer instance start` command line.
-        argv: list[str] = [self._binary, "instance", "start"]
-        argv += ["--bind", f"{staging_dir}:{mount_point}"]
+        # base/tail split lets the cgroup flags in the middle be dropped and retried on failure.
+        base_argv: list[str] = [self._binary, "instance", "start"]
+        base_argv += ["--bind", f"{staging_dir}:{mount_point}"]
         for bind in self._exec_config.default_binds:
-            argv += ["--bind", bind]
+            base_argv += ["--bind", bind]
         for bind in extra_binds:
-            argv += ["--bind", bind]
+            base_argv += ["--bind", bind]
         start_args = list(self._create_config.extra_start_args)
         resource_limit_flags = _resource_limit_flags(spec.resources)
-        if resource_limit_flags and self._create_config.apply_resource_limits:
-            if "--fakeroot" in start_args:
-                LOGGER.warning(
-                    "Skipping apptainer CPU/memory resource flags because create.extra_start_args contains --fakeroot."
-                )
-            else:
-                argv += resource_limit_flags
-        argv += _resource_passthrough_flags(spec.resources)
-        argv += start_args
+        want_cgroup_flags = bool(resource_limit_flags) and self._create_config.apply_resource_limits
+        if want_cgroup_flags and "--fakeroot" in start_args:
+            LOGGER.warning(
+                "Skipping apptainer CPU/memory resource flags because create.extra_start_args contains --fakeroot."
+            )
+            want_cgroup_flags = False
+        tail_argv = _resource_passthrough_flags(spec.resources) + start_args
 
-        # start the instance; clean up the staging dir on any failure.
-        try:
+        async def _start_instance(*, include_cgroup_flags: bool) -> tuple[int, str, str]:
+            argv = list(base_argv)
+            if include_cgroup_flags:
+                argv += resource_limit_flags
+            argv += tail_argv
             with _private_env_file(staging_dir, env_file_content) as env_file:
                 if env_file is not None:
                     argv += ["--no-eval", "--env-file", str(env_file)]
                 argv += [image, name]
-                code, _out, err = await self._run(
-                    argv,
-                    timeout_s=self._create_config.start_timeout_s,
-                    daemonize=True,
+                return await self._run(argv, timeout_s=self._create_config.start_timeout_s, daemonize=True)
+
+        # start the instance; clean up the staging dir on any failure.
+        try:
+            code, _out, err = await _start_instance(include_cgroup_flags=want_cgroup_flags)
+            if want_cgroup_flags and code != 0 and _is_cgroups_unavailable(err):
+                LOGGER.warning(
+                    "Apptainer cgroups unavailable (%s); retrying instance start for %r without "
+                    "CPU/memory cgroup flags. Memory limiting falls back to `ulimit -v` per exec.",
+                    err.strip() or "no stderr",
+                    name,
                 )
+                code, _out, err = await _start_instance(include_cgroup_flags=False)
         except TimeoutError as e:
             shutil.rmtree(staging_dir, ignore_errors=True)
             raise ApptainerCreateError(f"apptainer instance start timed out for image={image!r}: {e}") from e
@@ -471,6 +489,7 @@ class ApptainerProvider:
                 mount_point=mount_point,
                 image=image,
                 env=dict(spec.env),
+                memory_mib=spec.resources.memory_mib,
             ),
         )
 
@@ -578,6 +597,9 @@ class ApptainerProvider:
             # Need root inside the container to switch users, then su to the target.
             flags.append("--fakeroot")
             effective_command = f"su -s /bin/sh -c {shlex.quote(command)} {shlex.quote(str(user))}"
+
+        if inst.memory_mib is not None:
+            effective_command = f"ulimit -v {inst.memory_mib * 1024}; {effective_command}"
 
         flags += list(self._exec_config.extra_exec_args)
 

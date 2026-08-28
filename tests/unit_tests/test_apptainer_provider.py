@@ -68,6 +68,7 @@ def _make_handle(
     name: str = "nemo-gym-x",
     mount: str = "/sandbox",
     env: dict[str, str] | None = None,
+    memory_mib: int | None = None,
 ) -> SandboxHandle:
     inst = apptainer_provider._ApptainerInstance(
         name=name,
@@ -75,6 +76,7 @@ def _make_handle(
         mount_point=mount,
         image="docker://img",
         env=env or {},
+        memory_mib=memory_mib,
     )
     return SandboxHandle(sandbox_id=name, provider_name="apptainer", raw=inst)
 
@@ -294,6 +296,7 @@ async def test_create_builds_argv_and_runs_probe(
     assert handle.raw.mount_point == "/sandbox"
     assert handle.raw.image == "docker://ubuntu:22.04"
     assert handle.raw.env == {"FOO": "bar"}
+    assert handle.raw.memory_mib == 1024  # exec() will prepend `ulimit -v` from this
 
     start_argv = rec.calls[0]["argv"]
     assert start_argv[:3] == [FAKE_BINARY, "instance", "start"]
@@ -309,7 +312,8 @@ async def test_create_builds_argv_and_runs_probe(
     probe_argv = rec.calls[1]["argv"]
     assert "exec" in probe_argv
     assert f"instance://{handle.sandbox_id}" in probe_argv
-    assert probe_argv[-1] == apptainer_provider.READY_PROBE_COMMAND
+    # The readiness probe itself goes through exec(), so it picks up the ulimit backstop too.
+    assert probe_argv[-1] == f"ulimit -v 1048576; {apptainer_provider.READY_PROBE_COMMAND}"
     assert rec.calls[1]["timeout_s"] == 30
     assert len(env_files) == 2
     assert all(not path.exists() for path in env_files)
@@ -319,6 +323,7 @@ async def test_create_builds_argv_and_runs_probe(
 async def test_create_skips_cgroup_resource_limits(
     fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, create_config: dict[str, Any]
 ) -> None:
+    """The ulimit backstop applies regardless of why the cgroup flags were skipped."""
     staging = tmp_path / "staging"
     monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", lambda prefix: str(staging.mkdir() or staging))
 
@@ -328,12 +333,67 @@ async def test_create_skips_cgroup_resource_limits(
         return (0, "", "")
 
     provider, rec = _make_provider(monkeypatch, responder, create=create_config)
-    await provider.create(SandboxSpec(image="ubuntu:22.04", resources={"cpu": 2, "memory_mib": 1024, "gpu": 1}))
+    handle = await provider.create(
+        SandboxSpec(image="ubuntu:22.04", resources={"cpu": 2, "memory_mib": 1024, "gpu": 1})
+    )
 
     start_argv = rec.calls[0]["argv"]
     assert "--cpus" not in start_argv
     assert "--memory" not in start_argv
     assert "--nv" in start_argv
+    assert handle.raw.memory_mib == 1024
+
+
+async def test_create_retries_without_cgroup_flags_when_cgroups_unavailable(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", lambda prefix: str(staging.mkdir() or staging))
+
+    cgroups_error = (
+        "FATAL:   container creation failed: while applying cgroups config: cannot use cgroups - "
+        "cannot use systemd cgroups manager, systemd not running as init on this host"
+    )
+
+    def responder(argv: list[str]) -> tuple[int, str, str]:
+        if "start" in argv:
+            if "--memory" in argv:
+                return (255, "", cgroups_error)
+            return (0, "", "")  # retry without cgroup flags succeeds
+        return (0, apptainer_provider.READY_PROBE_EXPECTED, "")
+
+    provider, rec = _make_provider(monkeypatch, responder)
+
+    with caplog.at_level("WARNING"):
+        handle = await provider.create(SandboxSpec(image="ubuntu:22.04", resources={"memory_mib": 1024}))
+
+    assert "Apptainer cgroups unavailable" in caplog.text
+    start_calls = [c["argv"] for c in rec.calls if "start" in c["argv"]]
+    assert len(start_calls) == 2
+    assert "--memory" in start_calls[0]
+    assert "--memory" not in start_calls[1]
+    # The ulimit backstop still applies even though the cgroup flag was dropped.
+    assert handle.raw.memory_mib == 1024
+
+
+async def test_create_does_not_retry_for_unrelated_start_failure(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", lambda prefix: str(staging.mkdir() or staging))
+
+    def responder(argv: list[str]) -> tuple[int, str, str]:
+        if "start" in argv:
+            return (255, "", "FATAL:   container creation failed: image not found")
+        return (0, apptainer_provider.READY_PROBE_EXPECTED, "")
+
+    provider, rec = _make_provider(monkeypatch, responder)
+
+    with pytest.raises(apptainer_provider.ApptainerCreateError, match="image not found"):
+        await provider.create(SandboxSpec(image="ubuntu:22.04", resources={"memory_mib": 1024}))
+
+    start_calls = [c["argv"] for c in rec.calls if "start" in c["argv"]]
+    assert len(start_calls) == 1  # no retry for a non-cgroups failure
 
 
 async def test_create_extra_binds_from_provider_options(
@@ -556,6 +616,40 @@ async def test_exec_user_mapping(
         assert argv[-1] == expected
     else:
         assert argv[-1] == "whoami"
+
+
+async def test_exec_prepends_ulimit_when_memory_mib_set(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "", ""))
+    handle = _make_handle(tmp_path, memory_mib=1024)
+
+    await provider.exec(handle, "echo hi")
+
+    assert rec.calls[0]["argv"][-1] == "ulimit -v 1048576; echo hi"
+
+
+async def test_exec_ulimit_wraps_su_when_switching_user(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "", ""))
+    handle = _make_handle(tmp_path, memory_mib=2)
+
+    await provider.exec(handle, "whoami", user="alice")
+
+    expected_su = f"su -s /bin/sh -c {shlex.quote('whoami')} {shlex.quote('alice')}"
+    assert rec.calls[0]["argv"][-1] == f"ulimit -v 2048; {expected_su}"
+
+
+async def test_exec_omits_ulimit_when_memory_mib_unset(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "", ""))
+    handle = _make_handle(tmp_path)
+
+    await provider.exec(handle, "echo hi")
+
+    assert rec.calls[0]["argv"][-1] == "echo hi"
 
 
 async def test_exec_passes_stdin(fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
