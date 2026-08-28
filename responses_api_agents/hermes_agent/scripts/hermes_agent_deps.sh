@@ -20,7 +20,12 @@ install_nemo_gym_deps
 echo "Installing hermes-agent ($HERMES_SPEC)"
 # HERMES_NIX_BUILD=1 bypasses the wheel-build restriction added in some branches.
 HERMES_NIX_BUILD=1 "$DEPS_DIR/bin/python3" -m pip install --force-reinstall --no-deps "$HERMES_SPEC"
-HERMES_NIX_BUILD=1 "$DEPS_DIR/bin/python3" -m pip install "$HERMES_SPEC"
+# hermes-agent's own (unpinned) openai requirement can otherwise win pip's resolver and
+# silently downgrade below nemo-gym's pin (see pyproject.toml). Constrain it so pip errors
+# instead of installing an openai version nemo-gym's schema subclasses weren't audited against.
+OPENAI_CONSTRAINT="$(grep -oE '"openai==[0-9.]+"' "$NEMO_GYM_ROOT/pyproject.toml" | tr -d '"')"
+: "${OPENAI_CONSTRAINT:?could not read openai pin from $NEMO_GYM_ROOT/pyproject.toml}"
+HERMES_NIX_BUILD=1 "$DEPS_DIR/bin/python3" -m pip install -c <(echo "$OPENAI_CONSTRAINT") "$HERMES_SPEC"
 
 "$DEPS_DIR/bin/python3" -c "import model_tools; from run_agent import AIAgent; print('hermes-agent OK')"
 
