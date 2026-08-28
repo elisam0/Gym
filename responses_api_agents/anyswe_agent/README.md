@@ -62,8 +62,8 @@ For large runs, bake `/agent_deps_mount/bin/python`, NeMo Gym, and the selected
 agent into each task image. `agent_runtime_source` controls other delivery modes:
 
 - `baked` uses the runtime in the task image and is the default.
-- `auto` builds the portable runtime with `setup_scripts/<agent>_deps.sh` once
-  and uploads the resulting archive to each sandbox.
+- `auto` builds the portable runtime with each agent's own `scripts/<agent>_deps.sh`
+  once and uploads the resulting archive to each sandbox.
 - A local tarball path uploads a prebuilt runtime.
 - An HTTP(S) URL downloads a prebuilt runtime inside the sandbox.
 

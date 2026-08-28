@@ -50,7 +50,7 @@ gym eval run --no-serve --agent anyswe_cline \
 ```
 
 That config sets `repo_dir: /testbed` so Cline edits the checkout anyswe takes the patch from.
-`setup_scripts/cline_agent_deps.sh` builds the portable runtime (`agent_runtime_source: auto`) when
+`scripts/cline_agent_deps.sh` builds the portable runtime (`agent_runtime_source: auto`) when
 the CLI is not already baked into the task image.
 
 ## Model server
