@@ -108,7 +108,7 @@ Settings for starting the instance (`apptainer instance start`).
 | `mount_point` | `/sandbox` | Absolute path inside the container where the host staging dir is bind-mounted. Powers the file-transfer fast path. |
 | `start_timeout_s` | `600` | Max seconds to wait for `instance start` (`None` = no timeout). |
 | `extra_start_args` | `[]` | Extra raw flags appended to `instance start`. |
-| `apply_resource_limits` | `true` | Add CPU/memory cgroup flags from `SandboxSpec.resources`. |
+| `apply_resource_limits` | `true` | Add CPU/memory cgroup flags from `SandboxSpec.resources`. Auto-retries without them if cgroups fail (see [Resource limits](#resource-limits)); set `false` to skip cgroup flags outright. Doesn't affect the unconditional `ulimit -v` memory backstop. |
 
 ### `exec` — `ApptainerExecConfig`
 
@@ -233,6 +233,16 @@ are unaffected.
 | `gpu` (truthy) | `--nv` (NVIDIA passthrough) |
 | `disk_gib`, `gpu_type` | No direct Apptainer flag — ignored. |
 
+**Cgroups can hard-fail, not just no-op.** Without cgroups v2 delegation (common when
+Apptainer is nested in a Slurm Pyxis/Enroot job container), `instance start` can fail
+outright rather than silently skip the limit. When that happens, the provider retries
+once without the CPU/memory flags and logs a warning. Other failures raise normally.
+
+**`ulimit -v` memory backstop.** Whenever `memory_mib` is set, `exec` also
+unconditionally prepends `ulimit -v <memory_mib*1024>;` (`RLIMIT_AS`), regardless of
+whether the `--memory` cgroup flag actually got applied. Tradeoff: it caps *virtual
+address space*, not RSS, so a process reserving a lot of address space without using
+it could get killed even when cgroups are enforcing correctly.
 
 ### Status mapping
 
@@ -262,8 +272,10 @@ failed" rather than "the command exited 125".
   may not resolve. Prefer named users.
 - **`--fakeroot` on exec.** Whether `--fakeroot` works on `exec` into an instance that
   was started *without* fakeroot varies by Apptainer version and host configuration.
-- **Resource enforcement.** CPU/memory cgroup flags require cgroups v2 delegation.
-  Disable them with `create.apply_resource_limits: false`.
+- **Resource enforcement.** CPU cgroup flags need cgroups v2 delegation and can make
+  `instance start` hard-fail without it; the provider auto-retries without them (see
+  [Resource limits](#resource-limits)). Memory also gets an unconditional `ulimit -v`
+  backstop either way.
 - **Runtime-failure detection is heuristic.** It keys off stderr markers, so a user
   command whose own output contains `FATAL:` could be misclassified as a sandbox error.
 
