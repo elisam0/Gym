@@ -30,6 +30,7 @@ from responses_api_agents.anyswe_agent.app import (
     _benchmark_key,
     _build_swetask,
     _instance_image,
+    _render_instruction,
     _resolve_swe_image,
 )
 
@@ -130,6 +131,43 @@ class TestBenchmarkKey:
 
     def test_swe_bench_pro(self) -> None:
         assert _benchmark_key("ScaleAI/SWE-bench_Pro") == "swe-bench-pro"
+
+
+class TestRenderInstruction:
+    def test_non_pro_benchmark_returns_problem_statement_verbatim(self) -> None:
+        problem_info = {
+            "dataset_name": "princeton-nlp/SWE-bench_Verified",
+            "problem_statement": "fix the bug",
+            "instance_dict": json.dumps({"requirements": "should not appear", "interface": "should not appear"}),
+        }
+        assert _render_instruction(problem_info) == "fix the bug"
+
+    def test_swe_bench_pro_appends_requirements_and_interface(self) -> None:
+        problem_info = {
+            "dataset_name": "ScaleAI/SWE-bench_Pro",
+            "problem_statement": "fix the bug",
+            "instance_dict": json.dumps({"requirements": "must rename Foo to foo", "interface": "func Foo()"}),
+        }
+        rendered = _render_instruction(problem_info)
+        assert rendered == (
+            "fix the bug\n\nRequirements:\nmust rename Foo to foo\n\nNew interfaces introduced:\nfunc Foo()"
+        )
+
+    def test_swe_bench_pro_missing_fields_falls_back_to_problem_statement(self) -> None:
+        problem_info = {
+            "dataset_name": "ScaleAI/SWE-bench_Pro",
+            "problem_statement": "fix the bug",
+            "instance_dict": json.dumps({"requirements": "", "interface": None}),
+        }
+        assert _render_instruction(problem_info) == "fix the bug"
+
+    def test_instance_dict_already_parsed(self) -> None:
+        problem_info = {
+            "dataset_name": "ScaleAI/SWE-bench_Pro",
+            "problem_statement": "fix the bug",
+            "instance_dict": {"requirements": "req text", "interface": ""},
+        }
+        assert _render_instruction(problem_info) == "fix the bug\n\nRequirements:\nreq text"
 
 
 class TestInstanceImage:

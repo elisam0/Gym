@@ -115,6 +115,34 @@ _REPO_WORKDIR_OVERRIDES: dict[str, str] = {
 _SWE_BENCH_PRO_IMAGE_REPOSITORY = "docker.io/jefzda/sweap-images"
 
 
+def _render_instruction(problem_info: Dict[str, Any]) -> str:
+    """Build the agent-visible task instruction, enriching SWE-bench Pro's problem_statement.
+
+    SWE-bench Pro rows carry ``requirements``/``interface`` fields alongside
+    ``problem_statement``, describing parts of the fix not always covered by the issue text
+    alone (e.g. specific struct/interface reshaping). The upstream SWE-agent scaffold's own
+    instance-generation script (``generate_sweagent_instances.py`` -> ``create_problem_statement``
+    in https://github.com/scaleapi/SWE-bench_Pro-os) folds them into the agent-visible prompt,
+    as does this repo's own https://github.com/NVIDIA-NeMo/Gym/pull/2498. Other benchmarks (e.g.
+    SWE-bench Verified) don't have these fields, so this is a no-op for them.
+    """
+    problem_statement = problem_info.get("problem_statement", "")
+    if _benchmark_key(problem_info.get("dataset_name", "")) != "swe-bench-pro":
+        return problem_statement
+    inst_dict = problem_info.get("instance_dict")
+    inst = json.loads(inst_dict) if isinstance(inst_dict, str) else dict(inst_dict or {})
+    requirements = (inst.get("requirements") or "").strip()
+    interface = (inst.get("interface") or "").strip()
+    if not requirements and not interface:
+        return problem_statement
+    parts = [problem_statement]
+    if requirements:
+        parts.append(f"Requirements:\n{requirements}")
+    if interface:
+        parts.append(f"New interfaces introduced:\n{interface}")
+    return "\n\n".join(parts)
+
+
 def _benchmark_key(dataset_name: str) -> str:
     """Map a HuggingFace dataset name to a registered ``swe_env`` harness key.
 
@@ -496,7 +524,7 @@ class GymAgentHarnessProcessor(BaseModel):
             The shell command that runs the dynamic-loader runner inside the sandbox.
         """
         cfg: AnySweInstanceConfig = self.config
-        (cfg.persistent_dir / "instruction.txt").write_text(cfg.problem_info.get("problem_statement", ""))
+        (cfg.persistent_dir / "instruction.txt").write_text(_render_instruction(cfg.problem_info))
         runner = _RUNNER_TEMPLATE.format(
             agent_module=cfg.agent_server_module,
             agent_class=cfg.agent_server_class,
