@@ -285,6 +285,37 @@ def _resolve_swe_image(inst: Dict[str, Any], container_formatter: Any, instance_
     return _instance_image(container_formatter, instance_id)
 
 
+_ANTI_CHEAT_SETUP_SH = (
+    Path(__file__).resolve().parent.parent / "swe_env" / "harnesses" / "anti_cheat_setup.sh"
+).read_text()
+
+
+def _anti_cheat_setup(
+    task: SweTask, *, apply_anti_cheating: bool
+) -> tuple[Dict[str, str] | None, str | None]:
+    """Build the ``stage_files``/``pre_launch_cmd`` pair that hardens a SWE-bench Pro sandbox.
+
+    Strips the task's git repo down to its base_commit's ancestry before the agent starts (see
+    ``anti_cheat_setup.sh``), matching this repo's own port of PR #2498's ``apply_anti_cheating``
+    default. A no-op for every other benchmark, which don't share this concern.
+
+    Args:
+        task: The task about to be provisioned.
+        apply_anti_cheating: The agent config's ``apply_anti_cheating`` setting.
+
+    Returns:
+        ``(stage_files, pre_launch_cmd)`` for ``provision_and_collect``, or ``(None, None)``.
+    """
+    if not apply_anti_cheating or task.benchmark != "swe-bench-pro":
+        return None, None
+    stage_files = {f"{task.repo_workdir}/anti_cheat_setup.sh": _ANTI_CHEAT_SETUP_SH}
+    pre_launch_cmd = (
+        f"git reset --hard && WORKING_DIRECTORY={task.repo_workdir} bash anti_cheat_setup.sh "
+        f"&& rm anti_cheat_setup.sh"
+    )
+    return stage_files, pre_launch_cmd
+
+
 _RUNNER_TEMPLATE = """\
 #!/usr/bin/env python3
 import asyncio, base64, json, os, subprocess, sys
@@ -421,6 +452,12 @@ class AnySweAgentConfig(BaseResponsesAPIAgentConfig):
     swebench_agent_timeout: int = 2700
     concurrency: int = 16
     results_dir: Optional[Path] = None
+    # Strip the agent's sandbox down to its base_commit's ancestry (no other branches, tags,
+    # remotes, or reflog) before the agent starts, so it can't "solve" a task by checking out a
+    # later commit that already has the fix, if an image happens to ship fuller git history than
+    # intended. SWE-bench Pro only (default matches this repo's own port of PR #2498's
+    # apply_anti_cheating default); a no-op for benchmarks without this concern.
+    apply_anti_cheating: bool = True
 
 
 class AnySweServerConfig(BaseModel):
@@ -757,6 +794,10 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         task = _build_swetask(params.problem_info, flat_eval=flat)
         provider = self._provider(params)
 
+        anti_cheat_stage_files, anti_cheat_pre_launch_cmd = _anti_cheat_setup(
+            task, apply_anti_cheating=self.config.apply_anti_cheating
+        )
+
         t0 = time.time()
         result = await provision_and_collect(
             task,
@@ -764,6 +805,8 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             agent_launch_command=launch_command,
             extra_env=self._agent_egress_env(params),
             agent_timeout_s=params.swebench_agent_timeout,
+            stage_files=anti_cheat_stage_files,
+            pre_launch_cmd=anti_cheat_pre_launch_cmd,
         )
         agent_run_time = time.time() - t0
         agent_timed_out = result.get("error_type") == "timeout"

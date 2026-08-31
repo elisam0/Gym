@@ -27,6 +27,7 @@ from responses_api_agents.anyswe_agent.app import (
     AnySweAgent,
     AnySweAgentConfig,
     GymAgentHarnessProcessor,
+    _anti_cheat_setup,
     _benchmark_key,
     _build_swetask,
     _instance_image,
@@ -252,6 +253,34 @@ class TestBuildSweTask:
         assert task.benchmark == "swe-bench-pro"
         assert task.repo_workdir == "/app"
         assert task.image == "docker.io/jefzda/sweap-images:repo__inst-1"
+
+
+class TestAntiCheatSetup:
+    def _pro_task(self):
+        inst = {"base_commit": "deadbeef", "fail_to_pass": [], "pass_to_pass": [], "dockerhub_tag": "t"}
+        problem_info = _problem_info(
+            instance_id="repo__inst-1",
+            dataset_name="ScaleAI/SWE-bench_Pro",
+            container_formatter="docker://swebench/sweb.eval.x86_64.{instance_id}",
+            instance_dict=json.dumps(inst),
+        )
+        return _build_swetask(problem_info)
+
+    def test_swe_bench_pro_stages_script_and_builds_command(self) -> None:
+        stage_files, pre_launch_cmd = _anti_cheat_setup(self._pro_task(), apply_anti_cheating=True)
+        assert stage_files is not None and set(stage_files) == {"/app/anti_cheat_setup.sh"}
+        assert "git reset --hard" in pre_launch_cmd
+        assert "WORKING_DIRECTORY=/app" in pre_launch_cmd
+        assert "bash anti_cheat_setup.sh" in pre_launch_cmd
+        assert "rm anti_cheat_setup.sh" in pre_launch_cmd
+
+    def test_disabled_is_a_no_op(self) -> None:
+        assert _anti_cheat_setup(self._pro_task(), apply_anti_cheating=False) == (None, None)
+
+    def test_non_pro_benchmark_is_a_no_op(self) -> None:
+        task = _build_swetask(_problem_info())
+        assert task.benchmark == "swe-bench"
+        assert _anti_cheat_setup(task, apply_anti_cheating=True) == (None, None)
 
 
 class TestSetupScriptsExist:

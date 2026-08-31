@@ -143,11 +143,13 @@ async def provision_and_collect(
     stage_files: Mapping[str, str] | None = None,
     patch_output_glob: str | None = None,
     agent_timeout_s: int | float = 1800,
+    pre_launch_cmd: str | None = None,
 ) -> dict[str, Any]:
     """Provision and self-drive the agent, returning the patch and error signals.
 
-    Provisions a writable sandbox from the task image, stages any caller-supplied files,
-    runs the opaque ``agent_launch_command`` at the repo working directory, then extracts the
+    Provisions a writable sandbox from the task image, stages any caller-supplied files, runs
+    an optional ``pre_launch_cmd`` (e.g. benchmark-specific sandbox setup/hardening), runs the
+    opaque ``agent_launch_command`` at the repo working directory, then extracts the
     unified-diff patch. No grading happens here.
 
     Two egress styles are supported and composable:
@@ -175,6 +177,10 @@ async def provision_and_collect(
         patch_output_glob: When given, the patch is read from an ``output.jsonl`` under this
             path; otherwise it comes from ``git diff --cached`` on ``repo_workdir``.
         agent_timeout_s: Timeout in seconds for the agent run. Defaults to ``1800``.
+        pre_launch_cmd: Optional shell command run once, after ``stage_files`` are written but
+            before the agent is launched (e.g. a benchmark-specific anti-cheating setup step
+            that depends on a staged script). Runs at ``repo_workdir``; failures are logged but
+            do not abort provisioning.
 
     Returns:
         A dict with keys ``"patch"`` (the unified-diff string), ``"agent_error"`` (the
@@ -185,6 +191,14 @@ async def provision_and_collect(
     async with acquire_sandbox(provider, spec, instance_id=task.instance_id) as env:
         for remote_path, content in (stage_files or {}).items():
             await env.write_text(remote_path, content)
+        if pre_launch_cmd:
+            setup = await env.execute(pre_launch_cmd, cwd=task.repo_workdir, timeout_s=600)
+            if setup.get("returncode") != 0:
+                print(
+                    f"[{task.instance_id}] pre_launch_cmd failed (rc={setup.get('returncode')}): "
+                    f"{setup.get('output', '')[-2000:]}",
+                    flush=True,
+                )
         run = await env.execute(agent_launch_command, cwd=task.repo_workdir, timeout_s=agent_timeout_s)
         error_type = run.get("error_type")
         if patch_output_glob:
