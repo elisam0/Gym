@@ -27,4 +27,5 @@ npm install -g --prefix "$DEPS_DIR" "$CLAUDE_SPEC"
 
 "$DEPS_DIR/bin/claude" --version || echo "warning: claude --version failed (may need runtime env)"
 
+fixup_relocated_shebangs
 echo "claude_code_agent deps ready at $DEPS_DIR"
