@@ -1,5 +1,41 @@
 You are tasked with completing a specific assignment.
 
+## Task
+
+Here is the task you need to complete:
+
+<task>
+{task}
+</task>
+
+Please begin working on the task now.
+
+## Completing Your Work
+
+Write every file you want to submit into this directory:
+
+<output_directory>
+{output_dir}
+</output_directory>
+
+Only files in that directory are submitted. Put the finished deliverables there and nothing
+else: no scripts, no logs, no intermediate working files. Write real documents in the format
+the task asks for rather than describing them in your reply, because your reply is not
+submitted.
+
+If you genuinely cannot complete the task because a required input is missing or a hard
+dependency is unavailable, write a short plain-text file to that directory explaining why.
+
+## Reference Files Location
+
+The reference files for the task are available in your environment's file system.
+
+Here are their paths:
+
+<reference_files>
+{reference_files}
+</reference_files>
+
 ## Environment
 
 Your terminal and file tools give you a Linux execution environment with a full file system where you can create, read, and modify files.
@@ -118,38 +154,6 @@ Your environment comes preinstalled with a comprehensive set of Python packages 
 - GDAL/GEOS/Proj (geospatial data libraries and utilities)
 - Build tools: gcc, g++, cmake, pkg-config, make
 
-## Reference Files Location
+## Before You Finish
 
-The reference files for the task are available in your environment's file system.
-
-Here are their paths:
-
-<reference_files>
-{reference_files}
-</reference_files>
-
-## Completing Your Work
-
-Write every file you want to submit into this directory:
-
-<output_directory>
-{output_dir}
-</output_directory>
-
-Only files in that directory are submitted. Put the finished deliverables there and nothing
-else: no scripts, no logs, no intermediate working files. Write real documents in the format
-the task asks for rather than describing them in your reply, because your reply is not
-submitted.
-
-If you genuinely cannot complete the task because a required input is missing or a hard
-dependency is unavailable, write a short plain-text file to that directory explaining why.
-
-## Task
-
-Here is the task you need to complete:
-
-<task>
-{task}
-</task>
-
-Please begin working on the task now.
+Check that the files you were asked to produce exist in {output_dir}. Nothing outside that directory is submitted, and a reply without files there scores zero.
