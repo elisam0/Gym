@@ -36,7 +36,9 @@ gdpval_hermes_resources_server:
           handles_audio_video: true
         - name: claude-opus-4.8
           model: ${oc.env:JUDGE_CLAUDE_MODEL,aws/anthropic/bedrock-claude-opus-4-8}
-          create_params_overrides: { extra_body: { thinking: { type: enabled } } }
+          # No thinking override: it is an Anthropic messages-route field, and the judge reaches
+          # this model over chat completions, which rejects the request outright.
+          create_params_overrides: {}
 
 gdpval_hermes:
   responses_api_agents:
