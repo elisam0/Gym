@@ -14,10 +14,10 @@
 #     --output results/gdpval_hermes.jsonl
 
 config_paths:
-  - responses_api_agents/gdpval_agent/configs/gdpval_agent.yaml
+  - responses_api_agents/gdpval_agent/configs/gdpval_hermes.yaml
 
 gdpval_hermes_benchmark_agent:
-  _inherit_from: gdpval_hermes_agent
+  _inherit_from: gdpval_hermes
   responses_api_agents:
     gdpval_agent:
       datasets:

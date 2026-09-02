@@ -38,7 +38,7 @@ gdpval_hermes_resources_server:
           model: ${oc.env:JUDGE_CLAUDE_MODEL,aws/anthropic/bedrock-claude-opus-4-8}
           create_params_overrides: { extra_body: { thinking: { type: enabled } } }
 
-gdpval_hermes_agent:
+gdpval_hermes:
   responses_api_agents:
     gdpval_agent:
       entrypoint: app.py

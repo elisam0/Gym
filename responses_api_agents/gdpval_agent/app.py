@@ -186,7 +186,9 @@ class GDPValAgent(SimpleResponsesAPIAgent):
         if not script.exists():
             raise RuntimeError(f"no setup script for {key!r} at {script}")
         portable_python_sh = Path(__file__).parent / "setup_scripts" / "_portable_python.sh"
-        deps_dir = Path(__file__).parent / "deps" / key
+        # Named the way the evaluation pipeline derives it, so a pinned harness version can
+        # drop the sentinel to force a rebuild.
+        deps_dir = Path(__file__).parent / "deps" / f"gdpval_{key}_deps"
         sentinel = deps_dir / ".installed"
         recipe = deps_recipe_key(script, portable_python_sh)
         if sentinel.exists() and sentinel.read_text().strip() == recipe:
