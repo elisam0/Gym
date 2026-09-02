@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# GDPVal scored in rubric mode, with the Hermes harness running inside the GDPVal container.
+# The Stirrup variant is benchmarks/gdpval/config.yaml and is unaffected by this file.
+#
+#   apptainer build gdpval.sif responses_api_agents/stirrup_agent/containers/gdpval.def
+#   export GDPVAL_CONTAINER_PATH=/abs/path/to/gdpval.sif
+#   export PERSIST_DELIVERABLES_DIR=/abs/path/to/deliverables
+#   export HF_TOKEN=... JUDGE_API_KEY=sk-...
+#
+#   gym eval prepare --benchmark gdpval/hermes
+#   gym eval run --benchmark gdpval/hermes --model-type vllm_model --split benchmark \
+#     --output results/gdpval_hermes.jsonl
+
+config_paths:
+  - responses_api_agents/gdpval_agent/configs/gdpval_agent.yaml
+
+gdpval_hermes_benchmark_agent:
+  _inherit_from: gdpval_hermes_agent
+  responses_api_agents:
+    gdpval_agent:
+      datasets:
+        - name: gdpval
+          type: benchmark
+          jsonl_fpath: benchmarks/gdpval/data/gdpval_benchmark.jsonl
+          prompt_config: null
+          prepare_script: benchmarks/gdpval/prepare.py
+          num_repeats: 1
