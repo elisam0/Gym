@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,6 +26,9 @@ from responses_api_agents.gdpval_agent.app import (
     agent_key,
     build_user_prompt,
     is_deliverable,
+)
+from responses_api_agents.gdpval_agent.sandbox_entrypoint import (
+    prepare_environment,
 )
 
 
@@ -149,3 +153,16 @@ async def test_collect_clears_a_previous_attempt(tmp_path):
 
     assert not (target / "stale.docx").exists()
     assert (target / "fresh.docx").exists()
+
+
+def test_prepare_environment_appends_deps_bin_to_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+    monkeypatch.setenv("GDPVAL_WORKDIR", str(tmp_path))
+    monkeypatch.setenv("GDPVAL_AGENT_DEPS_DIR", "/agent_deps_mount")
+
+    prepare_environment()
+
+    path = os.environ["PATH"].split(":")
+    assert path.index("/usr/local/bin") < path.index("/agent_deps_mount/bin")
+    assert os.environ["TERMINAL_CWD"] == str(tmp_path)
+    assert (tmp_path / ".home").is_dir()

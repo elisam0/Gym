@@ -22,23 +22,25 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-agent_deps_dir = os.environ.get("GDPVAL_AGENT_DEPS_DIR", "/agent_deps_mount")
-# Appended, not prepended: the container's own python carries the document libraries the
-# tasks need, and the deps prefix python does not.
-os.environ["PATH"] = os.environ.get("PATH", "") + f":{agent_deps_dir}/bin"
+def prepare_environment() -> None:
+    agent_deps_dir = os.environ.get("GDPVAL_AGENT_DEPS_DIR", "/agent_deps_mount")
+    # Appended, not prepended: the container's own python carries the document libraries the
+    # tasks need, and the deps prefix python does not.
+    os.environ["PATH"] = os.environ.get("PATH", "") + f":{agent_deps_dir}/bin"
 
-workdir = os.environ.get("GDPVAL_WORKDIR", "/workspace")
-os.environ.setdefault("TERMINAL_CWD", workdir)
+    workdir = os.environ.get("GDPVAL_WORKDIR", "/workspace")
+    os.environ.setdefault("TERMINAL_CWD", workdir)
 
-agent_home = Path(os.environ.get("GDPVAL_AGENT_HOME", f"{workdir}/.home"))
-os.environ["HOME"] = str(agent_home)
-os.environ["XDG_CACHE_HOME"] = str(agent_home / ".cache")
-os.environ["XDG_CONFIG_HOME"] = str(agent_home / ".config")
-os.environ["XDG_DATA_HOME"] = str(agent_home / ".local" / "share")
-agent_home.mkdir(parents=True, exist_ok=True)
+    agent_home = Path(os.environ.get("GDPVAL_AGENT_HOME", f"{workdir}/.home"))
+    os.environ["HOME"] = str(agent_home)
+    os.environ["XDG_CACHE_HOME"] = str(agent_home / ".cache")
+    os.environ["XDG_CONFIG_HOME"] = str(agent_home / ".config")
+    os.environ["XDG_DATA_HOME"] = str(agent_home / ".local" / "share")
+    agent_home.mkdir(parents=True, exist_ok=True)
 
 
 def main() -> None:
+    prepare_environment()
     model_url = os.environ.get("GDPVAL_MODEL_URL", "")
     model_name = os.environ["GDPVAL_MODEL_NAME"]
     traj_dir = os.environ["GDPVAL_TRAJ_DIR"]
