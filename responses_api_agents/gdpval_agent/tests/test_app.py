@@ -32,6 +32,12 @@ from responses_api_agents.gdpval_agent.sandbox_entrypoint import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_deps_provisioning(monkeypatch, tmp_path):
+    """Constructing the agent installs the harness prefix, which takes minutes."""
+    monkeypatch.setattr(GDPValAgent, "_provision_deps", lambda self: tmp_path / "deps")
+
+
 def _config(tmp_path: Path, **overrides) -> GDPValAgentConfig:
     base = dict(
         host="0.0.0.0",

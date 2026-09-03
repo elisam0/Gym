@@ -179,6 +179,9 @@ class GDPValAgent(SimpleResponsesAPIAgent):
         self._setup_lock = asyncio.Lock()
         self._sandbox_provider = resolve_provider_config(self.config.sandbox_provider)
         self._sandbox_metadata = resolve_provider_metadata(self._sandbox_provider)
+        # At startup rather than on the first rollout, so a pre-warm that only starts the
+        # servers still leaves the prefix in place.
+        self._deps_dir = self._provision_deps()
 
     def _provision_deps(self) -> Path:
         key = agent_key(self.config.agent_server_module)
@@ -307,8 +310,6 @@ class GDPValAgent(SimpleResponsesAPIAgent):
             async with self._setup_lock:
                 if self._image is None:
                     self._image = await asyncio.to_thread(self._resolve_image)
-                if self._deps_dir is None:
-                    self._deps_dir = await asyncio.to_thread(self._provision_deps)
 
             with tempfile.TemporaryDirectory(prefix="gdpval_agent_") as scratch:
                 staged = Path(scratch) / "input"
