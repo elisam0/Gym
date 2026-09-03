@@ -203,6 +203,8 @@ class GDPValAgent(SimpleResponsesAPIAgent):
 
     def _resolve_image(self) -> str:
         image = self.config.image.strip()
+        if not image:
+            raise ValueError("no container image configured; set GDPVAL_CONTAINER_PATH")
         is_apptainer = "apptainer" in self._sandbox_provider
         if image.endswith(".sif") or image.startswith(("/", ".")):
             if not is_apptainer:

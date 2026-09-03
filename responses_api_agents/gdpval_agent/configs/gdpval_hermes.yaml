@@ -57,7 +57,7 @@ gdpval_hermes:
 
       concurrency: 4
       timeout: 5400
-      persist_deliverables_dir: ${oc.env:PERSIST_DELIVERABLES_DIR}
+      persist_deliverables_dir: ${oc.env:PERSIST_DELIVERABLES_DIR,}
 
       agent_server_module: responses_api_agents.hermes_agent.app
       agent_server_class: HermesAgent
@@ -74,7 +74,7 @@ gdpval_hermes:
         disabled_toolsets:
           ["code_execution", "memory", "vision", "video", "computer_use", "desktop_ui", "project"]
 
-      image: ${oc.env:GDPVAL_CONTAINER_PATH}
+      image: ${oc.env:GDPVAL_CONTAINER_PATH,}
       container_workdir: /workspace
       sandbox_provider:
         apptainer:
