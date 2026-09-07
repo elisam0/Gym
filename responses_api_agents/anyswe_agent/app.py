@@ -218,7 +218,7 @@ class GymAgentHarnessProcessor(BaseModel):
         return self.config.agent_server_module.split(".")[-2]
 
     def setup(self) -> Path:
-        deps_dir = Path(__file__).parent / f"anyswe_{self._agent_key}_deps"
+        deps_dir = Path(__file__).parent / "deps" / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
         scripts = Path(__file__).parent / "setup_scripts"
         script = scripts / f"{self._agent_key}_deps.sh"
