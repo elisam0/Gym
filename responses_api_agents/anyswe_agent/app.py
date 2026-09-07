@@ -130,6 +130,28 @@ def _as_list(value: Any) -> list[str]:
     return list(value or [])
 
 
+def _apptainer_writable_provider(resolved: Dict[str, Any]) -> Dict[str, Any]:
+    """Make a resolved apptainer provider config usable for SWE tasks.
+
+    The base .sif is read-only, so the agent's and grading's writes to /testbed need
+    --writable-tmpfs. apptainer's default host-$HOME bind also leaks host dotfiles/caches into
+    the sandbox (e.g. matplotlib's font cache), changing test outcomes vs. docker, so pass
+    --no-mount home too. No-op for any other provider (docker, opensandbox, ...).
+    """
+    if "apptainer" not in resolved:
+        return resolved
+    apptainer_config = dict(resolved["apptainer"] or {})
+    create_config = dict(apptainer_config.get("create") or {})
+    start_args = list(create_config.get("extra_start_args") or [])
+    if "--writable-tmpfs" not in start_args:
+        start_args.append("--writable-tmpfs")
+    if "--no-mount" not in start_args:
+        start_args += ["--no-mount", "home"]
+    create_config["extra_start_args"] = start_args
+    apptainer_config["create"] = create_config
+    return {**resolved, "apptainer": apptainer_config}
+
+
 def _r2e_resolved(instance: Dict[str, Any], log: str) -> bool:
     statuses: Dict[str, str] = {}
     for line in log.splitlines():
@@ -290,8 +312,8 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             model_server_url=model_url,
             agent_deps_archive=agent_deps_archive,
             agent_deps_url=agent_deps_url,
-            resolved_sandbox_provider=resolve_provider_config(
-                self.config.sandbox_provider, self.server_client.global_config_dict
+            resolved_sandbox_provider=_apptainer_writable_provider(
+                resolve_provider_config(self.config.sandbox_provider, self.server_client.global_config_dict)
             ),
             sandbox_default_metadata=resolve_provider_metadata(
                 self.config.sandbox_provider, self.server_client.global_config_dict
@@ -305,12 +327,20 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         instance = json.loads(instance) if isinstance(instance, str) else instance
         explicit_image = problem_info.get("image") or instance.get("image") or instance.get("docker_image")
         if explicit_image:
-            return str(explicit_image).removeprefix("docker://")
+            explicit_image = str(explicit_image)
+            if explicit_image.endswith(".sif") or explicit_image.startswith(("/", ".")):
+                return explicit_image
+            return explicit_image.removeprefix("docker://")
         formatter = problem_info["container_formatter"]
-        if formatter.endswith(".sif"):
-            raise ValueError("sandbox_provider requires a container image, not a .sif file")
+        instance_id = problem_info["instance_id"]
+        # A local Apptainer image (a .sif path) is used verbatim: substitute the raw instance_id
+        # (no docker-tag mangling) and skip the ":latest" docker tag, so a formatter like
+        # "/sifs/sweb.eval.x86_64.{instance_id}.sif" resolves to an on-disk file the apptainer
+        # provider can start directly, with no registry pull.
+        if formatter.endswith(".sif") or formatter.startswith(("/", ".")):
+            return formatter.format(instance_id=instance_id)
         formatter = formatter.removeprefix("docker://")
-        instance_id = problem_info["instance_id"].replace("__", "_1776_").lower()
+        instance_id = instance_id.replace("__", "_1776_").lower()
         image = formatter.format(instance_id=instance_id)
         if ":" not in image.rsplit("/", 1)[-1]:
             image += ":latest"

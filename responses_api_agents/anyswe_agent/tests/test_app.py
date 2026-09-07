@@ -27,6 +27,7 @@ from responses_api_agents.anyswe_agent.app import (
     AnySweAgent,
     AnySweAgentConfig,
     AnySweRunRequest,
+    _apptainer_writable_provider,
     _classify_agent_error,
     _dataset_family,
     _model_url_for_rollout,
@@ -141,6 +142,44 @@ class TestSandboxAPI:
             }
         )
         assert image == "swebench/sweb.eval.x86_64.astropy_1776_astropy-12907:latest"
+
+    def test_image_uses_sif_path_verbatim(self) -> None:
+        image = AnySweAgent._sandbox_image(
+            {
+                "instance_id": "astropy__astropy-12907",
+                "container_formatter": "/sifs/sweb.eval.x86_64.{instance_id}.sif",
+            }
+        )
+        assert image == "/sifs/sweb.eval.x86_64.astropy__astropy-12907.sif"
+
+    def test_explicit_sif_image_used_verbatim(self) -> None:
+        image = AnySweAgent._sandbox_image(
+            {
+                "instance_id": "astropy__astropy-12907",
+                "container_formatter": "docker://swebench/sweb.eval.x86_64.{instance_id}",
+                "image": "/sifs/sweb.eval.x86_64.astropy__astropy-12907.sif",
+            }
+        )
+        assert image == "/sifs/sweb.eval.x86_64.astropy__astropy-12907.sif"
+
+    def test_apptainer_provider_gets_writable_tmpfs_and_no_home_mount(self) -> None:
+        resolved = _apptainer_writable_provider({"apptainer": {}})
+        assert resolved["apptainer"]["create"]["extra_start_args"] == ["--writable-tmpfs", "--no-mount", "home"]
+
+    def test_apptainer_provider_preserves_existing_start_args(self) -> None:
+        resolved = _apptainer_writable_provider(
+            {"apptainer": {"create": {"extra_start_args": ["--fakeroot"]}}}
+        )
+        assert resolved["apptainer"]["create"]["extra_start_args"] == [
+            "--fakeroot",
+            "--writable-tmpfs",
+            "--no-mount",
+            "home",
+        ]
+
+    def test_non_apptainer_provider_is_unchanged(self) -> None:
+        resolved = _apptainer_writable_provider({"docker": {}})
+        assert resolved == {"docker": {}}
 
     def test_spec_forwards_public_sandbox_fields(self) -> None:
         params = SimpleNamespace(
