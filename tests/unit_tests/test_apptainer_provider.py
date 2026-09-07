@@ -561,6 +561,30 @@ async def test_exec_user_mapping(
         assert argv[-1] == "whoami"
 
 
+async def test_exec_applies_memory_limit_as_ulimit(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "", ""), create={"memory_limit_mib": 15360})
+    handle = _make_handle(tmp_path)
+
+    await provider.exec(handle, "whoami")
+    argv = rec.calls[0]["argv"]
+
+    assert argv[-1] == "ulimit -v 15728640; whoami"
+
+
+async def test_exec_without_memory_limit_leaves_command_unchanged(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    provider, rec = _make_provider(monkeypatch, lambda argv: (0, "", ""))
+    handle = _make_handle(tmp_path)
+
+    await provider.exec(handle, "whoami")
+    argv = rec.calls[0]["argv"]
+
+    assert argv[-1] == "whoami"
+
+
 async def test_exec_passes_stdin(fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     provider, rec = _make_provider(monkeypatch, lambda argv: (0, "ok", ""))
     await provider.exec(_make_handle(tmp_path), "cat", stdin=b"prompt-bytes")
