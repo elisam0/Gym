@@ -233,6 +233,7 @@ class GymAgentHarnessProcessor(BaseModel):
             return deps_dir
 
         lock = deps_dir.parent / f".{deps_dir.name}.lockdir"
+        lock.parent.mkdir(parents=True, exist_ok=True)
         while True:
             try:
                 lock.mkdir(exist_ok=False)
