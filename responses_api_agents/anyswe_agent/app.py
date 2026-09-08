@@ -220,13 +220,19 @@ class GymAgentHarnessProcessor(BaseModel):
     def setup(self) -> Path:
         deps_dir = Path(__file__).parent / "deps" / f"anyswe_{self._agent_key}_deps"
         sentinel = deps_dir / ".installed"
-        scripts = Path(__file__).parent / "setup_scripts"
-        script = scripts / f"{self._agent_key}_deps.sh"
+        agent_dir = PARENT_DIR / "responses_api_agents" / self._agent_key
+        shared_python = Path(__file__).parent / "setup_scripts" / "_portable_python.sh"
+        # Agents with their own standalone directory (e.g. hermes_agent) own their deps script
+        # there, so fixes to it aren't stuck in a separate, easily-forgotten copy. Agents that
+        # only exist wrapped by anyswe (e.g. cline, opencode, pi) keep their script here.
+        own_script = agent_dir / "scripts" / f"{self._agent_key}_deps.sh"
+        fallback_script = Path(__file__).parent / "setup_scripts" / f"{self._agent_key}_deps.sh"
+        script = own_script if own_script.exists() else fallback_script
         sources = (
             script,
-            scripts / "_portable_python.sh",
-            PARENT_DIR / "responses_api_agents" / self._agent_key / "requirements.txt",
-            *sorted((PARENT_DIR / "responses_api_agents" / self._agent_key).glob("*.py")),
+            shared_python,
+            agent_dir / "requirements.txt",
+            *sorted(agent_dir.glob("*.py")),
         )
         recipe = hashlib.sha256(b"".join(path.read_bytes() for path in sources if path.exists())).hexdigest()
         if sentinel.exists() and sentinel.read_text().strip() == recipe:
@@ -250,7 +256,10 @@ class GymAgentHarnessProcessor(BaseModel):
             if not script.exists():
                 raise ValueError(f"missing agent runtime setup script: {script}")
             deps_dir.mkdir(parents=True, exist_ok=True)
-            proc = Popen(f"DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}", shell=True)
+            proc = Popen(
+                f"PORTABLE_PYTHON_SH={shared_python} DEPS_DIR={deps_dir} NEMO_GYM_ROOT={PARENT_DIR} bash {script}",
+                shell=True,
+            )
             if proc.wait() != 0:
                 raise RuntimeError(f"agent runtime setup failed: {script}")
             sentinel.write_text(recipe)
