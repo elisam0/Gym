@@ -17,6 +17,7 @@ import hashlib
 import json
 import shlex
 import shutil
+import sys
 import tarfile
 import tempfile
 import time
@@ -729,7 +730,31 @@ class AnySweAgent(SimpleResponsesAPIAgent):
 
     async def run(self, body: AnySweRunRequest) -> AnySweVerifyResponse:
         async with self._sem:
-            response = await self._responses(body.responses_create_params, self.rollout_id_from_run(body))
+            try:
+                response = await self._responses(body.responses_create_params, self.rollout_id_from_run(body))
+            except Exception:
+                # Failure isolation: one bad instance must not abort the whole cell, and resume
+                # must still see a row. Return a present, masked, reward-0 result instead of raising.
+                print(f"[anyswe] run failed: {format_exc()}", file=sys.stderr)
+                return AnySweVerifyResponse(
+                    responses_create_params=body.responses_create_params.model_dump(),
+                    response=NeMoGymResponse(
+                        id="anyswe-error",
+                        created_at=int(time.time()),
+                        model=body.responses_create_params.model or "model",
+                        object="response",
+                        output=[],
+                        parallel_tool_calls=True,
+                        tool_choice="auto",
+                        tools=[],
+                    ),
+                    reward=0.0,
+                    resolved=False,
+                    patch_exists=False,
+                    mask_sample=True,
+                    error_kind="agent_error",
+                    instance_config={},
+                )
 
             meta, response.metadata = response.metadata, None
             metrics = SWEBenchMetrics.model_validate_json(meta["metrics"])

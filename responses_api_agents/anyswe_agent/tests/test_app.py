@@ -21,7 +21,10 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming
+from nemo_gym.server_utils import ServerClient
 from responses_api_agents.anyswe_agent.agent_runner import _extract_patch, _snapshot_repo
 from responses_api_agents.anyswe_agent.app import (
     AnySweAgent,
@@ -167,9 +170,7 @@ class TestSandboxAPI:
         assert resolved["apptainer"]["create"]["extra_start_args"] == ["--writable-tmpfs", "--no-mount", "home"]
 
     def test_apptainer_provider_preserves_existing_start_args(self) -> None:
-        resolved = _apptainer_writable_provider(
-            {"apptainer": {"create": {"extra_start_args": ["--fakeroot"]}}}
-        )
+        resolved = _apptainer_writable_provider({"apptainer": {"create": {"extra_start_args": ["--fakeroot"]}}})
         assert resolved["apptainer"]["create"]["extra_start_args"] == [
             "--fakeroot",
             "--writable-tmpfs",
@@ -270,6 +271,24 @@ class TestSandboxAPI:
         assert result["sandbox_provider"]["opensandbox"]["api_key"] == "***"
         assert "agent_runtime_source" not in result
         assert "agent_deps_url" not in result
+
+
+class TestRunFailureIsolation:
+    async def test_run_isolates_a_failing_instance(self, monkeypatch) -> None:
+        server_client = MagicMock(spec=ServerClient)
+        server_client.global_config_dict = {}
+        agent = AnySweAgent(config=_config(model_server=None), server_client=server_client)
+        monkeypatch.setattr(agent, "_responses", AsyncMock(side_effect=RuntimeError("boom")))
+        body = AnySweRunRequest(responses_create_params=NeMoGymResponseCreateParamsNonStreaming(input=[]))
+
+        result = await agent.run(body)
+
+        assert result.mask_sample is True
+        assert result.reward == 0.0
+        assert result.resolved is False
+        assert result.patch_exists is False
+        assert result.error_kind == "agent_error"
+        assert result.response.output == []
 
 
 class TestSetupScriptsExist:
