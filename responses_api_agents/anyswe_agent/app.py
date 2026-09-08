@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.request
 import uuid
 from asyncio import Semaphore
 from pathlib import Path
@@ -114,11 +115,29 @@ def _should_mask_sample(
     )
 
 
+_PRO_EVALUATOR_REF = "main"
+_PRO_EVALUATOR_BASE = f"https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/{_PRO_EVALUATOR_REF}"
+_PRO_IMAGE_REPOSITORY = "docker.io/jefzda/sweap-images"
+_VERIFIED_IMAGE_REPOSITORY = "swebench/sweb.eval.x86_64"
+
+# Module-level cache so each file is fetched at most once per process.
+_pro_script_cache: dict[str, str] = {}
+
+
+def _fetch_pro_file(path: str) -> str:
+    if path not in _pro_script_cache:
+        with urllib.request.urlopen(f"{_PRO_EVALUATOR_BASE}/{path}", timeout=30) as resp:
+            _pro_script_cache[path] = resp.read().decode("utf-8", errors="replace")
+    return _pro_script_cache[path]
+
+
 def _dataset_family(dataset_name: str) -> str:
     if "R2E-Gym" in dataset_name:
         return "r2e"
     if "SWE-bench_Multilingual" in dataset_name:
         return "swebench_multilingual"
+    if "SWE-bench_Pro" in dataset_name:
+        return "swebench_pro"
     return "swebench"
 
 
@@ -350,18 +369,19 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         # provider can start directly, with no registry pull.
         if formatter.endswith(".sif") or formatter.startswith(("/", ".")):
             return formatter.format(instance_id=instance_id)
-        formatter = formatter.removeprefix("docker://")
-        instance_id = instance_id.replace("__", "_1776_").lower()
-        image = formatter.format(instance_id=instance_id)
-        if ":" not in image.rsplit("/", 1)[-1]:
-            image += ":latest"
-        return image
+        # Pro: per-instance tag from the dataset row.
+        if instance.get("dockerhub_tag"):
+            return f"{_PRO_IMAGE_REPOSITORY}:{instance['dockerhub_tag']}"
+        # Verified: mangle instance_id to match the published image naming convention.
+        mangled = instance_id.replace("__", "_1776_").lower()
+        return f"{_VERIFIED_IMAGE_REPOSITORY}.{mangled}:latest"
 
     @staticmethod
     def _sandbox_spec(
         params: AnySweInstanceConfig,
         *,
         files: Optional[Dict[str, str]] = None,
+        workdir: str = "/testbed",
     ) -> SandboxSpec:
         config = dict(params.sandbox_spec)
         provider_options = dict(config.pop("provider_options", {}))
@@ -375,7 +395,7 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             image=params.container,
             ttl_s=config.pop("ttl_s", params.swebench_agent_timeout + params.swebench_tests_timeout + 600),
             ready_timeout_s=config.pop("ready_timeout_s", 1200),
-            workdir=config.pop("workdir", "/testbed"),
+            workdir=config.pop("workdir", workdir),
             # GIT_PAGER=cat avoids pager hangs. Do NOT set GIT_CONFIG_GLOBAL=/dev/null: older
             # instance images' git cannot parse /dev/null ("bad config line 1") and the eval
             # script's git checkout / test-patch apply then fail, leaving required tests un-run
@@ -423,8 +443,11 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         )
 
     async def _grade_sandbox_patch(self, params: AnySweInstanceConfig, patch: str) -> tuple[bool, Optional[str]]:
-        if _dataset_family(params.problem_info.get("dataset_name", "")) == "r2e":
+        family = _dataset_family(params.problem_info.get("dataset_name", ""))
+        if family == "r2e":
             return await self._grade_r2e_patch(params, patch)
+        if family == "swebench_pro":
+            return await self._grade_pro_patch(params, patch)
 
         from swebench.harness.grading import get_eval_report
         from swebench.harness.test_spec.test_spec import make_test_spec
@@ -470,6 +493,68 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             ]
         return bool(report["resolved"]), None
 
+    async def _grade_pro_patch(self, params: AnySweInstanceConfig, patch: str) -> tuple[bool, Optional[str]]:
+        from resources_servers.swebench_pro.verification import (
+            WORKSPACE_DIR,
+            assemble_workspace_files,
+            grade_output,
+        )
+
+        instance = self._instance_dict(params)
+        instance_id = params.instance_id
+
+        run_script = _fetch_pro_file(f"run_scripts/{instance_id}/run_script.sh")
+        parser_script = _fetch_pro_file(f"run_scripts/{instance_id}/parser.py")
+        base_dockerfile = _fetch_pro_file(f"dockerfiles/base_dockerfile/{instance_id}/Dockerfile")
+        instance_dockerfile = _fetch_pro_file(f"dockerfiles/instance_dockerfile/{instance_id}/Dockerfile")
+
+        sample = dict(instance) | {
+            "run_script": run_script,
+            "parser_script": parser_script,
+            "base_dockerfile": base_dockerfile,
+            "instance_dockerfile": instance_dockerfile,
+        }
+        files, _ = assemble_workspace_files(instance_id, None, patch, sample)
+
+        spec = self._sandbox_spec(
+            params,
+            workdir="/app",
+            files={f"{WORKSPACE_DIR}/{name}": content for name, content in files.items()},
+        )
+        sandbox = AsyncSandbox(params.resolved_sandbox_provider, spec)
+        output_json: Optional[str] = None
+        try:
+            await sandbox.start()
+            await sandbox.exec(
+                f"mkdir -p {WORKSPACE_DIR} && chmod +x {WORKSPACE_DIR}/entryscript.sh {WORKSPACE_DIR}/run_script.sh",
+                timeout_s=30,
+                user="root",
+            )
+            result = await sandbox.exec(
+                f"bash {WORKSPACE_DIR}/entryscript.sh",
+                cwd="/app",
+                timeout_s=params.swebench_tests_timeout,
+                user="root",
+            )
+            if result.error_type not in ("timeout", "sandbox"):
+                cat = await sandbox.exec(f"cat {WORKSPACE_DIR}/output.json", timeout_s=30, user="root")
+                output_json = cat.stdout
+        finally:
+            await sandbox.stop()
+
+        if result.error_type in ("timeout", "sandbox"):
+            return False, "eval_timeout" if result.error_type == "timeout" else "sandbox"
+
+        if not output_json:
+            return False, None
+
+        try:
+            test_results = json.loads(output_json)
+        except json.JSONDecodeError:
+            return False, None
+
+        return grade_output(test_results, sample), None
+
     async def _grade_r2e_patch(self, params: AnySweInstanceConfig, patch: str) -> tuple[bool, Optional[str]]:
         instance = self._instance_dict(params)
         eval_script = instance.get("eval_script") or params.problem_info.get("eval_script")
@@ -507,12 +592,15 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         return _r2e_resolved(instance, log), None
 
     async def _run_agent_in_sandbox(self, params: AnySweInstanceConfig) -> NeMoGymResponse:
+        family = _dataset_family(params.problem_info.get("dataset_name", ""))
+        workdir = "/app" if family == "swebench_pro" else "/testbed"
         files = {
             "/trajectories_mount/instruction.txt": (params.persistent_dir / "instruction.txt").read_text(),
             "/trajectories_mount/agent_runner.py": (params.persistent_dir / "agent_runner.py").read_text(),
         }
         spec = self._sandbox_spec(
             params,
+            workdir=workdir,
             files=files,
         )
         result = None
@@ -562,12 +650,23 @@ class AnySweAgent(SimpleResponsesAPIAgent):
                 )
                 if unpacked.return_code != 0:
                     raise RuntimeError(f"agent runtime extraction failed: {(unpacked.stderr or '')[:300]}")
-            if _dataset_family(params.problem_info.get("dataset_name", "")) == "r2e":
+            if family == "r2e":
                 await sandbox.exec(
                     "rm -rf /r2e_tests /root/r2e_tests /testbed/r2e_tests; "
                     "for f in /run_tests.sh /root/run_tests.sh /testbed/run_tests.sh; do "
                     'if grep -qs r2e_tests "$f"; then rm -f "$f"; fi; done',
                     timeout_s=30,
+                    user="root",
+                )
+            elif family == "swebench_pro":
+                from resources_servers.swebench_pro.verification import (
+                    AGENT_ENVIRONMENT_REPAIRS,
+                    build_seed_normalization,
+                )
+
+                await sandbox.exec(
+                    build_seed_normalization(AGENT_ENVIRONMENT_REPAIRS),
+                    timeout_s=60,
                     user="root",
                 )
             runtime_dir = "/sandbox/agent_deps_runtime" if external_runtime else "/agent_deps_mount"
@@ -586,7 +685,7 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             )
             result = await sandbox.exec(
                 command,
-                cwd="/testbed",
+                cwd=workdir,
                 env=agent_env,
                 timeout_s=params.swebench_agent_timeout,
                 user="root",
