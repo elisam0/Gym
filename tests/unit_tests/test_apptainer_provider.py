@@ -459,6 +459,78 @@ async def test_create_probe_failure_cleans_up(
     assert any("stop" in call["argv"] for call in rec.calls)
 
 
+def _distinct_mkdtemp(tmp_path: Path):
+    def mkdtemp(prefix: str) -> str:
+        path = tmp_path / f"{prefix}dir"
+        path.mkdir()
+        return str(path)
+
+    return mkdtemp
+
+
+async def test_create_swaps_writable_tmpfs_for_overlay(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", _distinct_mkdtemp(tmp_path))
+
+    def responder(argv: list[str]) -> tuple[int, str, str]:
+        if "start" in argv:
+            return (0, "", "")
+        if "exec" in argv:
+            return (0, apptainer_provider.READY_PROBE_EXPECTED, "")
+        return (0, "", "")
+
+    provider, rec = _make_provider(monkeypatch, responder, create={"extra_start_args": ["--writable-tmpfs"]})
+    handle = await provider.create(SandboxSpec(image="docker://img"))
+
+    start_argv = rec.calls[0]["argv"]
+    assert "--writable-tmpfs" not in start_argv
+    overlay_dir = handle.raw.overlay_dir
+    assert overlay_dir is not None and overlay_dir.exists()
+    assert _contains_seq(start_argv, ["--overlay", str(overlay_dir)])
+
+
+async def test_create_start_failure_cleans_up_overlay_dir(
+    fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(apptainer_provider.tempfile, "mkdtemp", _distinct_mkdtemp(tmp_path))
+    overlay_dir = tmp_path / "nemo-gym-apptainer-ovl-dir"
+
+    def responder(argv: list[str]) -> tuple[int, str, str]:
+        return (1, "", "boom")
+
+    provider, _rec = _make_provider(monkeypatch, responder, create={"extra_start_args": ["--writable-tmpfs"]})
+    with pytest.raises(apptainer_provider.ApptainerCreateError, match="failed"):
+        await provider.create(SandboxSpec(image="docker://img"))
+    assert not overlay_dir.exists()
+
+
+async def test_close_removes_overlay_dir(fake_binary: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    overlay_dir = tmp_path / "overlay"
+    overlay_dir.mkdir()
+
+    def responder(argv: list[str]) -> tuple[int, str, str]:
+        return (0, "", "")
+
+    provider, _rec = _make_provider(monkeypatch, responder)
+    handle = SandboxHandle(
+        sandbox_id="nemo-gym-abc",
+        provider_name="apptainer",
+        raw=apptainer_provider._ApptainerInstance(
+            name="nemo-gym-abc",
+            staging_dir=staging,
+            mount_point="/sandbox",
+            image="docker://img",
+            overlay_dir=overlay_dir,
+        ),
+    )
+    await provider.close(handle)
+    assert not staging.exists()
+    assert not overlay_dir.exists()
+
+
 # --------------------------------------------------------------------------- #
 # exec
 # --------------------------------------------------------------------------- #

@@ -160,6 +160,7 @@ class _ApptainerInstance:
     mount_point: str  # where the folder shows up inside
     image: str  # what it was built from
     env: dict[str, str] = field(default_factory=dict)
+    overlay_dir: Path | None = None  # per-instance disk overlay (cleaned on close)
 
 
 def _resource_flags(resources: SandboxResources) -> list[str]:
@@ -452,6 +453,14 @@ class ApptainerProvider:
         for bind in extra_binds:
             argv += ["--bind", bind]
         start_args = list(self._create_config.extra_start_args)
+        # --writable-tmpfs caps the writable layer at apptainer's `sessiondir max size`
+        # (default 64 MiB), which ENOSPCs for repos that rebuild on apply/eval (e.g. astropy's
+        # C extensions). Swap it for a per-instance DISK-backed overlay (bounded by host disk).
+        overlay_dir: Path | None = None
+        if "--writable-tmpfs" in start_args:
+            start_args = [a for a in start_args if a != "--writable-tmpfs"]
+            overlay_dir = Path(tempfile.mkdtemp(prefix="nemo-gym-apptainer-ovl-"))
+            start_args += ["--overlay", str(overlay_dir)]
         resource_limit_flags = _resource_limit_flags(spec.resources)
         if resource_limit_flags and self._create_config.apply_resource_limits:
             if "--fakeroot" in start_args:
@@ -476,9 +485,13 @@ class ApptainerProvider:
                 )
         except TimeoutError as e:
             shutil.rmtree(staging_dir, ignore_errors=True)
+            if overlay_dir:
+                shutil.rmtree(overlay_dir, ignore_errors=True)
             raise ApptainerCreateError(f"apptainer instance start timed out for image={image!r}: {e}") from e
         if code != 0:
             shutil.rmtree(staging_dir, ignore_errors=True)
+            if overlay_dir:
+                shutil.rmtree(overlay_dir, ignore_errors=True)
             raise ApptainerCreateError(
                 f"apptainer instance start failed (code={code}) for image={image!r}: {err.strip()}"
             )
@@ -493,6 +506,7 @@ class ApptainerProvider:
                 mount_point=mount_point,
                 image=image,
                 env=dict(spec.env),
+                overlay_dir=overlay_dir,
             ),
         )
 
@@ -558,6 +572,8 @@ class ApptainerProvider:
                 timeout_s=self._exec_config.default_timeout_s,
             )
         shutil.rmtree(inst.staging_dir, ignore_errors=True)
+        if inst.overlay_dir:
+            shutil.rmtree(inst.overlay_dir, ignore_errors=True)
 
     async def exec(
         self,
@@ -745,6 +761,8 @@ class ApptainerProvider:
             shutil.rmtree(inst.staging_dir, ignore_errors=False)
         except OSError as e:
             LOGGER.warning("failed to remove staging dir %s: %s", inst.staging_dir, e)
+        if inst.overlay_dir:
+            shutil.rmtree(inst.overlay_dir, ignore_errors=True)
 
         if stop_error is not None:
             raise stop_error
