@@ -375,7 +375,11 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             ttl_s=config.pop("ttl_s", params.swebench_agent_timeout + params.swebench_tests_timeout + 600),
             ready_timeout_s=config.pop("ready_timeout_s", 1200),
             workdir=config.pop("workdir", "/testbed"),
-            env=config.pop("env", {}),
+            # GIT_PAGER=cat avoids pager hangs. Do NOT set GIT_CONFIG_GLOBAL=/dev/null: older
+            # instance images' git cannot parse /dev/null ("bad config line 1") and the eval
+            # script's git checkout / test-patch apply then fail, leaving required tests un-run
+            # (false misses). swebench's own nested eval doesn't null it either.
+            env={"GIT_PAGER": "cat", **config.pop("env", {})},
             files=files or {},
             metadata=metadata,
             resources=SandboxResources.from_mapping(config.pop("resources", {})),
