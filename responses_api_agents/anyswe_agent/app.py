@@ -608,7 +608,14 @@ class AnySweAgent(SimpleResponsesAPIAgent):
         patch_path = params.persistent_dir / "patch.diff"
         patch = patch_path.read_text() if patch_path.exists() else ""
         response_path = params.persistent_dir / "response.json"
-        saved = NeMoGymResponse.model_validate_json(response_path.read_text()) if response_path.exists() else None
+        saved = None
+        if response_path.exists():
+            try:
+                saved = NeMoGymResponse.model_validate_json(response_path.read_text())
+            except (json.JSONDecodeError, ValueError) as exc:
+                print(
+                    f"[{params.instance_id}] response.json unreadable ({exc}), treating as empty response", flush=True
+                )
 
         agent_error = ""
         agent_timed_out = False
