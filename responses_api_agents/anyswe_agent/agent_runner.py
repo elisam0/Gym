@@ -27,6 +27,14 @@ sys.path.insert(0, "/nemo_gym_mount")
 agent_deps_dir = os.environ.get("NGSWE_AGENT_DEPS_DIR", "/agent_deps_mount")
 os.environ["PATH"] = f"{agent_deps_dir}/bin:" + os.environ.get("PATH", "")
 
+# Activate the testbed virtualenv so the agent uses the repo's pinned Python and packages.
+# Without this, harness tools that spawn Python subprocesses fall back to the agent-deps
+# interpreter above, which lacks the repo's packages.
+_testbed_venv = "/opt/miniconda3/envs/testbed"
+if os.path.isdir(_testbed_venv):
+    os.environ["VIRTUAL_ENV"] = _testbed_venv
+    os.environ["PATH"] = os.path.join(_testbed_venv, "bin") + ":" + os.environ.get("PATH", "")
+
 _REPO_CANDIDATES = ("/testbed", "/workspace/repo", "/app", "/root/repo")
 
 
