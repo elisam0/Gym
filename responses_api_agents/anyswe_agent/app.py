@@ -111,7 +111,7 @@ def _should_mask_sample(
     return bool(
         (resolved and agent_error_kind in ("max_iteration", "context_window"))
         or agent_timed_out
-        or error_kind in ("eval_timeout", "sandbox")
+        or error_kind in ("eval_timeout", "sandbox", "grading_failed")
     )
 
 
@@ -546,12 +546,21 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             return False, "eval_timeout" if result.error_type == "timeout" else "sandbox"
 
         if not output_json:
-            return False, None
+            (params.persistent_dir / "grading_error.txt").write_text(
+                f"entryscript.sh produced no {WORKSPACE_DIR}/output.json\n"
+                f"return_code={result.return_code}\n"
+                f"--- stdout ---\n{result.stdout or ''}\n"
+                f"--- stderr ---\n{result.stderr or ''}\n"
+            )
+            return False, "grading_failed"
 
         try:
             test_results = json.loads(output_json)
-        except json.JSONDecodeError:
-            return False, None
+        except json.JSONDecodeError as exc:
+            (params.persistent_dir / "grading_error.txt").write_text(
+                f"{WORKSPACE_DIR}/output.json was not valid JSON: {exc}\n--- raw ---\n{output_json[:5000]}\n"
+            )
+            return False, "grading_failed"
 
         return grade_output(test_results, sample), None
 
