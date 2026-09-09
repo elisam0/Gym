@@ -7,7 +7,11 @@ export PYTHONNOUSERSITE=1
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.13.14}"
 PBS_RELEASE="${PBS_RELEASE:-20260805}"
-ARCH="${ARCH:-x86_64-unknown-linux-gnu}"
+# musl (not gnu): statically linked, so it has no dependency on the target task image's glibc.
+# SWE-bench Pro task images span many distros/ages; the gnu build was relocating against
+# posix_fallocate64 missing in some of them (return_code=127) and failing to even launch in
+# others, dropping those instances to 0 reward before a single model call.
+ARCH="${ARCH:-x86_64-unknown-linux-musl}"
 
 install_portable_python() {
     if [ -x "$DEPS_DIR/bin/python3" ]; then
