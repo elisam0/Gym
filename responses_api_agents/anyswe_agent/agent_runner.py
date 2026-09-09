@@ -94,9 +94,16 @@ def main() -> None:
     agent_kwargs = _json_env("NGSWE_AGENT_KWARGS")
     sampling = _json_env("NGSWE_SAMPLING")
 
+    # nemo_gym adds the current working directory to sys.path on import (for its own plugin
+    # discovery). Here cwd is the task repo (e.g. /testbed), so a repo that ships a top-level
+    # folder matching one of the agent's own module names (e.g. sphinx's `utils`, requests'
+    # `requests`) would shadow it and crash the agent at startup. Drop cwd back out afterward.
+    _cwd = os.getcwd()
     from nemo_gym.config_types import ModelServerRef, ResourcesServerRef
     from nemo_gym.openai_utils import NeMoGymEasyInputMessage, NeMoGymResponseCreateParamsNonStreaming
     from nemo_gym.server_utils import ServerClient
+
+    sys.path[:] = [p for p in sys.path if p not in (_cwd, "", ".")]
 
     module = importlib.import_module(os.environ["NGSWE_AGENT_MODULE"])
     agent_class = getattr(module, os.environ["NGSWE_AGENT_CLASS"])

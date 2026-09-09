@@ -70,6 +70,25 @@ class TestAgentRunner:
         assert '["git", "add", "-A"]' in source
         assert '["git", "diff", "--no-color", "--cached", baseline_tree]' in source
 
+    def test_cwd_dropped_from_sys_path_after_nemo_gym_import(self) -> None:
+        """nemo_gym adds cwd (the task repo, e.g. /testbed) to sys.path on import. A repo with a
+        top-level folder named like one of the agent's own modules (sphinx's `utils`, requests'
+        `requests`) would shadow it and crash the agent at startup, so the runner must scrub cwd
+        back out right after importing nemo_gym, before any other agent code runs.
+        """
+        source = self._source()
+        import_idx = source.index("from nemo_gym.config_types import")
+        cwd_capture_idx = source.index("_cwd = os.getcwd()")
+        scrub_idx = source.index('sys.path[:] = [p for p in sys.path if p not in (_cwd, "", ".")]')
+        assert cwd_capture_idx < import_idx < scrub_idx, (
+            "cwd must be captured before, and scrubbed after, the nemo_gym import"
+        )
+
+        sys_path = ["/nemo_gym_mount", "/testbed", "/agent_deps_mount/lib/python3.13/site-packages", "", "."]
+        _cwd = "/testbed"
+        sys_path[:] = [p for p in sys_path if p not in (_cwd, "", ".")]
+        assert sys_path == ["/nemo_gym_mount", "/agent_deps_mount/lib/python3.13/site-packages"]
+
     def test_patch_extraction_excludes_image_dirt_and_includes_agent_files(self, tmp_path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
