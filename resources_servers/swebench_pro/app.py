@@ -26,7 +26,7 @@ from traceback import format_exc
 from typing import Any
 
 from fastapi import FastAPI, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from nemo_gym.base_resources_server import (
     BaseResourcesServerConfig,
@@ -39,8 +39,9 @@ from nemo_gym.base_resources_server import (
 from nemo_gym.global_config import get_global_config_dict
 from nemo_gym.sandbox import AsyncSandbox, SandboxResources, SandboxSpec
 from nemo_gym.sandbox.config import resolve_provider_config, resolve_provider_metadata
-from nemo_gym.sandbox.providers.base import SandboxPtySession
+from nemo_gym.sandbox.providers.base import ConnectableProvider, SandboxPtySession
 from nemo_gym.server_utils import SESSION_ID_KEY
+from resources_servers.swebench_pro.image_cache import digest_hex, verify_local_image
 from resources_servers.swebench_pro.verification import (
     DEFAULT_ENVIRONMENT_REPAIRS,
     VerificationInputs,
@@ -124,6 +125,7 @@ class SWEBenchProResourcesServerConfig(BaseResourcesServerConfig):
     # Which container repairs to apply; see `ENVIRONMENT_REPAIRS`.
     environment_repairs: tuple[str, ...] = DEFAULT_ENVIRONMENT_REPAIRS
     image_repository: str = "docker.io/jefzda/sweap-images"
+    image_template: str | None = None  # Local SIF path with a checked provenance manifest.
     sandbox_provider: str
     sandbox_config: dict[str, Any]
 
@@ -160,12 +162,16 @@ class SWEBenchProInstanceRequest(BaseModel):
 
 class SWEBenchProSeedSessionRequest(SWEBenchProInstanceRequest, BaseSeedSessionRequest):
     sandbox_spec: dict[str, Any] | None = None
+    create_pty: bool = True  # Command-based harnesses such as Hermes do not need an interactive terminal.
 
 
 class SWEBenchProSeedSessionResponse(BaseSeedSessionResponse):
     sandbox_handle: str
-    # The agent attaches to this session; without it, it builds its own sandbox instead.
-    pty_session_id: str
+    # Available to harnesses that request an interactive terminal during seeding.
+    pty_session_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    sandbox_descriptor: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None)
+    cleanup_url_path: str = "/close_session"
+    image_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class SWEBenchProVerifyRequest(SWEBenchProInstanceRequest, BaseVerifyRequest):
@@ -173,6 +179,7 @@ class SWEBenchProVerifyRequest(SWEBenchProInstanceRequest, BaseVerifyRequest):
 
 
 class SWEBenchProVerifyResponse(BaseVerifyResponse):
+    image_provenance: dict[str, Any] = Field(default_factory=dict)
     evaluation_completed: bool
     resolved: bool
     patch_applied: bool
@@ -210,7 +217,18 @@ class SWEBenchProResourcesServer(SimpleResourcesServer):
                 await self.shutdown()
 
         app.router.lifespan_context = lifespan
+        app.post("/close_session")(self.close_session)
         return app
+
+    async def close_session(self, request: Request) -> dict[str, bool]:
+        session_id = request.session[SESSION_ID_KEY]
+        self._session_id_to_pristine_untracked.pop(session_id, None)
+        await self.close_pty_session(self._session_id_to_pty.pop(session_id, None))
+        sandbox = self._session_id_to_sandbox.pop(session_id, None)
+        if sandbox is not None:
+            async with asyncio.timeout(self.config.verification_stop_timeout):
+                await sandbox.stop()
+        return {"closed": True}
 
     async def close_pty_session(self, session: SandboxPtySession | None) -> None:
         """Close the agent's terminal; a session outliving its sandbox leaks its connection."""
@@ -236,9 +254,22 @@ class SWEBenchProResourcesServer(SimpleResourcesServer):
                 print("Failed to stop abandoned SWE-bench Pro sandbox", format_exc(), file=sys.stderr)
 
     def _image(self, body: SWEBenchProInstanceRequest) -> str:
+        if self.config.image_template:
+            return self.config.image_template.format(
+                instance_id=body.instance_id,
+                dockerhub_tag=body.dockerhub_tag,
+                image_digest_hex=digest_hex(body.image_digest),
+            )
         if body.image_digest:
             return f"{self.config.image_repository}@{body.image_digest}"
         return f"{self.config.image_repository}:{body.dockerhub_tag}"
+
+    def _image_info(self, body: SWEBenchProInstanceRequest) -> dict[str, Any]:
+        image = self._image(body)
+        if self.config.image_template:
+            source = f"docker://{self.config.image_repository}@{body.image_digest}"
+            return verify_local_image(Path(image), source)
+        return {"image": image, "source_uri": image}
 
     async def _create_sandbox(
         self,
@@ -248,8 +279,9 @@ class SWEBenchProResourcesServer(SimpleResourcesServer):
         global_config_dict = get_global_config_dict()
         provider_config = resolve_provider_config(self.config.sandbox_provider, global_config_dict)
         provider_metadata = resolve_provider_metadata(self.config.sandbox_provider, global_config_dict)
+        image_info = await asyncio.to_thread(self._image_info, body)
         spec = SandboxSpec(
-            image=self._image(body),
+            image=image_info["image"],
             ttl_s=self.config.sandbox_config.get("ttl_s"),
             ready_timeout_s=self.config.sandbox_config.get("ready_timeout_s"),
             workdir="/app",
@@ -301,26 +333,45 @@ class SWEBenchProResourcesServer(SimpleResourcesServer):
                 print("Failed to stop previous SWE-bench Pro sandbox", format_exc(), file=sys.stderr)
 
         sandbox = await self._create_sandbox(body)
-        pty_session = await sandbox.pty.create()
-        if self.config.apply_anti_cheating:
-            anti_cheat_setup_fpath = Path(__file__).parent.parent / "swebench" / "anti_cheat_setup.sh"
-            await sandbox.upload(anti_cheat_setup_fpath, "/app/anti_cheat_setup.sh")
-            result = await sandbox.exec(
-                "git reset --hard && WORKING_DIRECTORY=/app bash anti_cheat_setup.sh && rm anti_cheat_setup.sh",
-                timeout_s=600,
-            )
-            if result.return_code != 0:
-                print(
-                    f"Failed to setup anti-cheating for {body.instance_id}. Return code: {result.return_code}\n"
-                    f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+        pty_session = None
+        try:
+            if body.create_pty:
+                pty_session = await sandbox.pty.create()
+            if self.config.apply_anti_cheating:
+                anti_cheat_setup_fpath = Path(__file__).parent.parent / "swebench" / "anti_cheat_setup.sh"
+                await sandbox.upload(anti_cheat_setup_fpath, "/app/anti_cheat_setup.sh")
+                result = await sandbox.exec(
+                    "git reset --hard && WORKING_DIRECTORY=/app bash anti_cheat_setup.sh && rm anti_cheat_setup.sh",
+                    timeout_s=600,
                 )
-        await self.normalize_sandbox_environment(sandbox, body.instance_id)
-        self._session_id_to_pristine_untracked[session_id] = await self.pristine_untracked_files(sandbox)
+                if result.return_code != 0:
+                    print(
+                        f"Failed to setup anti-cheating for {body.instance_id}. Return code: {result.return_code}\n"
+                        f"Stdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+                    )
+            await self.normalize_sandbox_environment(sandbox, body.instance_id)
+            pristine = await self.pristine_untracked_files(sandbox)
+            descriptor = (
+                await sandbox.serialize()
+                if isinstance(getattr(sandbox, "_provider", None), ConnectableProvider)
+                else None
+            )
+            response = SWEBenchProSeedSessionResponse(
+                sandbox_handle=sandbox._handle.sandbox_id,
+                pty_session_id=pty_session.session_id if pty_session is not None else None,
+                sandbox_descriptor=descriptor,
+                image_provenance=await asyncio.to_thread(self._image_info, body),
+            )
+        except BaseException:
+            await self.close_pty_session(pty_session)
+            async with asyncio.timeout(self.config.verification_stop_timeout):
+                await sandbox.stop()
+            raise
+        self._session_id_to_pristine_untracked[session_id] = pristine
         self._session_id_to_sandbox[session_id] = sandbox
-        self._session_id_to_pty[session_id] = pty_session
-        return SWEBenchProSeedSessionResponse(
-            sandbox_handle=sandbox._handle.sandbox_id, pty_session_id=pty_session.session_id
-        )
+        if pty_session is not None:
+            self._session_id_to_pty[session_id] = pty_session
+        return response
 
     async def normalize_sandbox_environment(self, sandbox: AsyncSandbox, instance_id: str) -> None:
         """Give the agent container the same repairs the verifier gets; best effort."""
@@ -445,6 +496,7 @@ class SWEBenchProResourcesServer(SimpleResourcesServer):
             )
 
         response_data = body.model_dump() | {
+            "image_provenance": await asyncio.to_thread(self._image_info, body),
             "reward": float(result.resolved),
             "evaluation_completed": result.completed,
             "resolved": result.resolved,
