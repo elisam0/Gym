@@ -689,7 +689,7 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             # tool would otherwise believe they're in /sandbox/home instead of /testbed, even
             # though the process's actual cwd is correctly /testbed the whole time.
             command = (
-                f"HOME=/sandbox/home TMPDIR=/sandbox/tmp TERMINAL_CWD={shlex.quote('/testbed')} "
+                f"HOME=/sandbox/home TMPDIR=/sandbox/tmp TERMINAL_CWD={shlex.quote(workdir)} "
                 f"{runtime_dir}/bin/python /trajectories_mount/agent_runner.py"
             )
             result = await sandbox.exec(
