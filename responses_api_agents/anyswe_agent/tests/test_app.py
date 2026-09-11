@@ -127,6 +127,19 @@ class TestAgentRunner:
 
 
 class TestSandboxAPI:
+    def test_agent_launch_command_sets_terminal_cwd(self) -> None:
+        """Without TERMINAL_CWD, Hermes defaults it to $HOME the first time it's read
+
+        (gateway/run.py's module-level fallback), not os.getcwd(). Since HOME is
+        /sandbox/home (not the repo, deliberately, to avoid apptainer bind-mounting the
+        host's real home dir), the agent's system prompt and its local terminal tool
+        would otherwise believe they're in /sandbox/home instead of /testbed.
+        """
+        source = (Path(__file__).parent.parent / "app.py").read_text()
+        terminal_cwd_idx = source.index("TERMINAL_CWD=")
+        launch_command_idx = source.index("/trajectories_mount/agent_runner.py", terminal_cwd_idx)
+        assert launch_command_idx - terminal_cwd_idx < 200, "TERMINAL_CWD must be set on the same launch command"
+
     def test_run_request_preserves_rollout_indices(self) -> None:
         request = AnySweRunRequest.model_validate(
             {

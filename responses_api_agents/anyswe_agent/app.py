@@ -573,8 +573,16 @@ class AnySweAgent(SimpleResponsesAPIAgent):
             runtime_dir = "/sandbox/agent_deps_runtime" if external_runtime else "/agent_deps_mount"
             agent_env = self._sandbox_agent_env(params)
             agent_env["NGSWE_AGENT_DEPS_DIR"] = runtime_dir
+            # Without TERMINAL_CWD, Hermes defaults it to $HOME the first time it's read
+            # (gateway/run.py's module-level fallback, pulled in as a side effect of
+            # session-segmentation config resolution) rather than os.getcwd(). Since HOME
+            # is /sandbox/home (not the repo, deliberately, to avoid apptainer bind-mounting
+            # the host's real home dir), the agent's system prompt and its local terminal
+            # tool would otherwise believe they're in /sandbox/home instead of /testbed, even
+            # though the process's actual cwd is correctly /testbed the whole time.
             command = (
-                f"HOME=/sandbox/home TMPDIR=/sandbox/tmp {runtime_dir}/bin/python /trajectories_mount/agent_runner.py"
+                f"HOME=/sandbox/home TMPDIR=/sandbox/tmp TERMINAL_CWD={shlex.quote('/testbed')} "
+                f"{runtime_dir}/bin/python /trajectories_mount/agent_runner.py"
             )
             result = await sandbox.exec(
                 command,
