@@ -9,12 +9,14 @@ anyswe_hermes:
       agent_server_module: responses_api_agents.hermes_agent.app
       agent_server_class: HermesAgent
       agent_config_class: HermesAgentConfig
-      agent_kwargs:
+      agent_kwargs: # Harbor default params for parity
         model: model
         max_turns: 90
         temperature: 1.0
         terminal_backend: local
         enabled_toolsets: null
+        compression_enabled: true # should disable for training
+        compression_threshold: 0.85
 
       container_formatter: ${oc.env:ANYSWE_CONTAINER_FORMATTER}
       sandbox_provider: sandbox

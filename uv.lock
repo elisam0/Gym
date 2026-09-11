@@ -13,6 +13,7 @@ resolution-markers = [
 [manifest]
 constraints = [{ name = "grpcio", specifier = ">=1.81.0rc1" }]
 overrides = [
+    { name = "openai", specifier = "==2.44.0" },
     { name = "opencv-python-headless", marker = "sys_platform == 'never'" },
     { name = "pycountry", marker = "sys_platform == 'never'" },
     { name = "pynvvideocodec", marker = "sys_platform == 'never'" },
