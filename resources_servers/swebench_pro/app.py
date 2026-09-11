@@ -170,7 +170,6 @@ class SWEBenchProSeedSessionResponse(BaseSeedSessionResponse):
     # Available to harnesses that request an interactive terminal during seeding.
     pty_session_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     sandbox_descriptor: dict[str, Any] | None = Field(default=None, exclude_if=lambda value: value is None)
-    cleanup_url_path: str = "/close_session"
     image_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
