@@ -16,6 +16,7 @@ import base64
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,15 +26,33 @@ from fastapi import Request
 
 sys.path.insert(0, "/nemo_gym_mount")
 agent_deps_dir = os.environ.get("NGSWE_AGENT_DEPS_DIR", "/agent_deps_mount")
+
+# Capture the task image's own python3 BEFORE prepending the agent-deps runtime to PATH, so
+# we can point the agent's code tools at the repo's interpreter even on images that don't
+# ship the classic conda env (e.g. SWE-bench Pro's /app images use /usr/local/bin/python3).
+_image_python = shutil.which("python3") or shutil.which("python")
+
 os.environ["PATH"] = f"{agent_deps_dir}/bin:" + os.environ.get("PATH", "")
 
-# Activate the testbed virtualenv so the agent uses the repo's pinned Python and packages.
-# Without this, harness tools that spawn Python subprocesses fall back to the agent-deps
-# interpreter above, which lacks the repo's packages.
+# Activate the repo's Python environment so the agent's code-execution tools (execute_code,
+# `python`) import the repo's packages and can run its test suite. hermes' execute_code picks
+# its interpreter from VIRTUAL_ENV/CONDA_PREFIX (tools/code_execution_tool.py
+# _resolve_child_python) and otherwise falls back to the isolated agent-deps interpreter
+# above -- which lacks the repo's packages, so `import <repo pkg>` / pytest raise
+# ModuleNotFoundError. Detect the repo env across image families instead of hardcoding one:
+#   - classic / SWE-bench Verified: /opt/miniconda3/envs/testbed (conda)
+#   - SWE-bench Pro (/app images):  the image's system python prefix (e.g. /usr/local, py3.11)
 _testbed_venv = "/opt/miniconda3/envs/testbed"
-if os.path.isdir(_testbed_venv):
-    os.environ["VIRTUAL_ENV"] = _testbed_venv
-    os.environ["PATH"] = os.path.join(_testbed_venv, "bin") + ":" + os.environ.get("PATH", "")
+if os.path.isdir(_testbed_venv):  # SWE Verified
+    _repo_prefix = _testbed_venv
+elif _image_python:  # SWE Pro
+    _cand = os.path.dirname(os.path.dirname(_image_python))
+    _repo_prefix = _cand if os.path.isfile(os.path.join(_cand, "bin", os.path.basename(_image_python))) else None
+else:
+    _repo_prefix = None
+if _repo_prefix:
+    os.environ["VIRTUAL_ENV"] = _repo_prefix
+    os.environ["PATH"] = os.path.join(_repo_prefix, "bin") + ":" + os.environ.get("PATH", "")
 
 _REPO_CANDIDATES = ("/testbed", "/workspace/repo", "/app", "/root/repo")
 
