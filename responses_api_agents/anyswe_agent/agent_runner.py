@@ -91,10 +91,40 @@ def _snapshot_repo(repo: Path, index_path: Path) -> str:
     ).stdout.strip()
 
 
+def _unstage_binaries(repo: Path, env: dict[str, str], baseline_tree: str) -> None:
+    """Drop staged binary files so one build artifact cannot void the whole patch.
+
+    `git add -A` stages untracked files on purpose, since a fix may add sources. It also stages
+    whatever the agent's own build and test runs left behind (a compiled `flipt`, a `dump.rdb`).
+    `git apply` rejects a patch outright when it carries binary content it cannot apply, so a single
+    artifact discards the real code change with it. numstat prints "-" for added and deleted lines
+    on exactly the binary entries.
+    """
+    numstat = subprocess.run(
+        ["git", "diff", "--cached", "--numstat", baseline_tree],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=True,
+        cwd=repo,
+        env=env,
+    ).stdout
+    binaries = [
+        parts[2]
+        for line in numstat.splitlines()
+        if len(parts := line.split("\t", 2)) == 3 and parts[0] == "-" and parts[1] == "-"
+    ]
+    if not binaries:
+        return
+    print(f"[anyswe] excluding {len(binaries)} binary path(s) from the patch: {binaries[:5]}", flush=True)
+    subprocess.run(["git", "restore", "--staged", "--", *binaries], check=False, cwd=repo, env=env)
+
+
 def _extract_patch(repo: Path, index_path: Path, baseline_tree: str) -> str:
     """Return only changes made after the agent started, including untracked files."""
     env = _alternate_index_env(index_path)
     subprocess.run(["git", "add", "-A"], check=True, cwd=repo, env=env)
+    _unstage_binaries(repo, env, baseline_tree)
     return subprocess.run(
         ["git", "diff", "--no-color", "--cached", baseline_tree],
         capture_output=True,
