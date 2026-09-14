@@ -91,11 +91,15 @@ def _safe_config_json(params: "AnySweInstanceConfig", indent: Optional[int] = No
     return json.dumps(redact(d), indent=indent)
 
 
-def _classify_agent_error(error: str, return_code: Optional[int] = None) -> Optional[str]:
-    # A non-zero exit means the agent process never got to run the task: a missing interpreter on a
-    # musl image, an import failure, a crash at startup. That is not a model outcome, so it is
-    # classified before the text checks, which only describe how a *running* agent ended.
-    if return_code:
+def _classify_agent_error(
+    error: str, return_code: Optional[int] = None, produced_response: bool = True
+) -> Optional[str]:
+    # A non-zero exit with no response.json means the agent never ran the task: a missing
+    # interpreter on a musl image, an import failure, a crash at startup. Both conditions are
+    # required, so an agent that completed the task and then died on the way out still counts as a
+    # model outcome and keeps its result. Checked before the text rules, which only describe how a
+    # *running* agent ended.
+    if return_code and not produced_response:
         return "agent_launch_failed"
     text = error.lower()
     if "maximum iteration" in text or "max iterations" in text or "max_turns" in text:
@@ -760,7 +764,11 @@ class AnySweAgent(SimpleResponsesAPIAgent):
                 error_kind = "sandbox"
         if saved is not None:
             agent_error += saved.model_dump_json()
-        agent_error_kind = _classify_agent_error(agent_error, result.return_code if result is not None else None)
+        agent_error_kind = _classify_agent_error(
+            agent_error,
+            result.return_code if result is not None else None,
+            produced_response=saved is not None,
+        )
 
         resolved = False
         if patch.strip() and error_kind is None:
