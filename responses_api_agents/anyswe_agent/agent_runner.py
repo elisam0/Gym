@@ -102,7 +102,12 @@ def _unstage_binaries(repo: Path, env: dict[str, str], baseline_tree: str) -> No
     """
     numstat = subprocess.run(
         ["git", "diff", "--cached", "--numstat", baseline_tree],
-        capture_output=True, text=True, errors="replace", check=True, cwd=repo, env=env,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=True,
+        cwd=repo,
+        env=env,
     ).stdout
     binaries = [
         parts[2]
