@@ -208,6 +208,10 @@ class AnySweAgentConfig(BaseResponsesAPIAgentConfig):
     sandbox_spec: Dict[str, Any] = Field(default_factory=dict)
     sandbox_model_base_url: Optional[str] = None
     agent_runtime_source: str = "baked"
+    # Where per-attempt directories go. Left unset they land beside this module, which puts them
+    # outside the run directory every downstream tool reads (slurm-evaluations' retry_abandoned.py
+    # looks for them there and silently retries nothing). Mirrors anyterminal_agent.results_dir.
+    results_dir: Optional[Path] = None
     swebench_tests_timeout: int = 1800
     swebench_agent_timeout: int = 2700
     concurrency: int = 256
@@ -344,11 +348,17 @@ class AnySweAgent(SimpleResponsesAPIAgent):
                 agent_deps_archive = Path(self.config.agent_runtime_source).expanduser()
                 if not agent_deps_archive.is_file():
                     raise ValueError(f"agent runtime archive not found: {agent_deps_archive}")
-        session_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        base_results_dir = self.config.results_dir
+        if base_results_dir is None:
+            session_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+            base_results_dir = workspace / f"anyswe_results_{session_id}"
+        else:
+            session_id = base_results_dir.name
+        base_results_dir.mkdir(parents=True, exist_ok=True)
 
         self._server = AnySweServerConfig(
             run_session_id=session_id,
-            base_results_dir=workspace / f"anyswe_results_{session_id}",
+            base_results_dir=base_results_dir,
             model_server_url=model_url,
             agent_deps_archive=agent_deps_archive,
             agent_deps_url=agent_deps_url,
