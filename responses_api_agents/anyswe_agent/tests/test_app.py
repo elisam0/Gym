@@ -58,6 +58,18 @@ def _config(**overrides) -> AnySweAgentConfig:
     return AnySweAgentConfig(**base)
 
 
+class TestResultsDir:
+    """Per-attempt directories must land where the caller asks, not beside this module."""
+
+    def test_configured_results_dir_is_used(self, tmp_path) -> None:
+        target = tmp_path / "results" / "run-1"
+        config = _config(results_dir=target)
+        assert config.results_dir == target
+
+    def test_results_dir_defaults_to_none(self) -> None:
+        assert _config().results_dir is None
+
+
 class TestAgentRunner:
     @staticmethod
     def _source() -> str:
