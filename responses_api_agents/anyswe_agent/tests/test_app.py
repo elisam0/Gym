@@ -27,7 +27,6 @@ from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming
 from nemo_gym.server_utils import ServerClient
 from responses_api_agents.anyswe_agent.agent_runner import _extract_patch, _snapshot_repo
 from responses_api_agents.anyswe_agent.app import (
-    _task_instruction,
     AnySweAgent,
     AnySweAgentConfig,
     AnySweRunRequest,
@@ -38,6 +37,7 @@ from responses_api_agents.anyswe_agent.app import (
     _r2e_resolved,
     _safe_config_json,
     _should_mask_sample,
+    _task_instruction,
 )
 from responses_api_agents.anyswe_agent.prepare import _to_gym_row
 
@@ -359,9 +359,7 @@ def _pro_problem_info() -> dict:
     return {
         "dataset_name": "ScaleAI/SWE-bench_Pro",
         "problem_statement": "PROBLEM BODY",
-        "instance_dict": json.dumps(
-            {"requirements": "REQUIRED SIGNATURE", "interface": "INTERFACE BODY"}
-        ),
+        "instance_dict": json.dumps({"requirements": "REQUIRED SIGNATURE", "interface": "INTERFACE BODY"}),
     }
 
 
