@@ -27,6 +27,7 @@ from nemo_gym.openai_utils import NeMoGymResponseCreateParamsNonStreaming
 from nemo_gym.server_utils import ServerClient
 from responses_api_agents.anyswe_agent.agent_runner import _extract_patch, _snapshot_repo
 from responses_api_agents.anyswe_agent.app import (
+    _task_instruction,
     AnySweAgent,
     AnySweAgentConfig,
     AnySweRunRequest,
@@ -352,3 +353,44 @@ class TestExampleData:
         for row in rows:
             assert "metadata" in row["responses_create_params"]
             assert "instance_id" in row["responses_create_params"]["metadata"]
+
+
+def _pro_problem_info() -> dict:
+    return {
+        "dataset_name": "ScaleAI/SWE-bench_Pro",
+        "problem_statement": "PROBLEM BODY",
+        "instance_dict": json.dumps(
+            {"requirements": "REQUIRED SIGNATURE", "interface": "INTERFACE BODY"}
+        ),
+    }
+
+
+def test_pro_instruction_carries_requirements_and_interface() -> None:
+    """Pro grades against names and signatures that live outside the problem statement."""
+    text = _task_instruction(_pro_problem_info())
+
+    assert "PROBLEM BODY" in text
+    assert "REQUIRED SIGNATURE" in text
+    assert "INTERFACE BODY" in text
+    # The template's own framing, without which the model is not told what to do with the report.
+    assert "/app" in text
+    assert "tests" in text
+
+
+def test_pro_instruction_survives_a_dict_instance() -> None:
+    """The row carries instance_dict as JSON, but callers may have parsed it already."""
+    info = _pro_problem_info()
+    info["instance_dict"] = json.loads(info["instance_dict"])
+
+    assert "REQUIRED SIGNATURE" in _task_instruction(info)
+
+
+def test_non_pro_instruction_is_the_problem_statement() -> None:
+    """Verified and multilingual ship no template; the statement is the whole task."""
+    info = {
+        "dataset_name": "princeton-nlp/SWE-bench_Verified",
+        "problem_statement": "PROBLEM BODY",
+        "instance_dict": json.dumps({}),
+    }
+
+    assert _task_instruction(info) == "PROBLEM BODY"

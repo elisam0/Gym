@@ -151,6 +151,32 @@ def _dataset_family(dataset_name: str) -> str:
     return "swebench"
 
 
+_PRO_PROMPT = Path(__file__).parents[2] / "benchmarks" / "swebench" / "pro" / "prompt.txt"
+
+
+def _task_instruction(problem_info: Dict[str, Any]) -> str:
+    """The task text the in-container agent is given.
+
+    SWE-bench Pro states a task across three dataset fields and ships the template that joins them,
+    which `benchmarks/swebench/pro/prepare.py` renders for every other consumer. The problem
+    statement alone omits the required names, paths and signatures that the graded tests assert on,
+    so sending it by itself asks the model to guess them. No other family here has a template, and
+    for those the statement is the whole task.
+    """
+    statement = str(problem_info.get("problem_statement", ""))
+    if _dataset_family(str(problem_info.get("dataset_name", ""))) != "swebench_pro":
+        return statement
+    instance = problem_info.get("instance_dict") or {}
+    instance = json.loads(instance) if isinstance(instance, str) else dict(instance)
+    # Deliberately not falling back to the statement when the template is missing: that is the bug
+    # this function exists to stop, and it is invisible in the reward.
+    return _PRO_PROMPT.read_text(encoding="utf-8").format(
+        problem_statement=statement,
+        requirements=str(instance.get("requirements", "")),
+        interface=str(instance.get("interface", "")),
+    )
+
+
 def _as_list(value: Any) -> list[str]:
     if isinstance(value, str):
         try:
@@ -300,7 +326,7 @@ class GymAgentHarnessProcessor(BaseModel):
     def write_runner(self) -> None:
         cfg: AnySweInstanceConfig = self.config
 
-        (cfg.persistent_dir / "instruction.txt").write_text(cfg.problem_info.get("problem_statement", ""))
+        (cfg.persistent_dir / "instruction.txt").write_text(_task_instruction(cfg.problem_info))
         runner = Path(__file__).with_name("agent_runner.py").read_text()
         (cfg.persistent_dir / "agent_runner.py").write_text(runner)
 
