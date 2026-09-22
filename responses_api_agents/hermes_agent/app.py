@@ -195,6 +195,7 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     # false force the block on or off, a list matches model-name substrings.
     tool_use_enforcement: Any = "auto"
     execution_guidance: Any = "auto"
+    google_operational_guidance: Any = "auto"
     system_prompt: Optional[str] = None
     compression_enabled: bool = True
     compression_threshold: float = 0.85
@@ -268,6 +269,7 @@ class HermesAgent(SimpleResponsesAPIAgent):
                 "max_turns": self.config.max_turns,
                 "tool_use_enforcement": self.config.tool_use_enforcement,
                 "execution_guidance": self.config.execution_guidance,
+                "google_operational_guidance": self.config.google_operational_guidance,
             },
             "memory": {
                 "memory_enabled": False,
