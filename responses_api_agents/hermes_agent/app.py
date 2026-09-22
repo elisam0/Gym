@@ -188,6 +188,14 @@ class HermesAgentConfig(BaseResponsesAPIAgentConfig):
     # Hermes caps web_search calls per turn (default 50). A benchmark that runs a whole task as
     # one turn hits it as a whole-task ceiling, and tripping it ends the turn. 0 disables.
     max_web_searches_per_turn: Optional[int] = None
+    # Same name-allowlist problem as api_call_stale_timeout above. Hermes gates its
+    # "# Tool-use enforcement" and "# Execution discipline" prompt blocks on a model-name match,
+    # and the name it receives is model_server.name ("policy_model"), so neither block has ever
+    # been sent for any model under Gym. These outrank that lookup: "auto" keeps it, true or
+    # false force the block on or off, a list matches model-name substrings.
+    tool_use_enforcement: Any = "auto"
+    execution_guidance: Any = "auto"
+    google_operational_guidance: Any = "auto"
     system_prompt: Optional[str] = None
     compression_enabled: bool = True
     compression_threshold: float = 0.85
@@ -257,7 +265,12 @@ class HermesAgent(SimpleResponsesAPIAgent):
             # Anything else silently downgrades images to a text description.
             "provider": "openai",
             "toolsets": ["hermes-cli"],
-            "agent": {"max_turns": self.config.max_turns},
+            "agent": {
+                "max_turns": self.config.max_turns,
+                "tool_use_enforcement": self.config.tool_use_enforcement,
+                "execution_guidance": self.config.execution_guidance,
+                "google_operational_guidance": self.config.google_operational_guidance,
+            },
             "memory": {
                 "memory_enabled": False,
                 "user_profile_enabled": False,
