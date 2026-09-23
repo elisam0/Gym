@@ -240,9 +240,7 @@ def main() -> None:
         slug = args.dataset_name.split("/")[-1].lower().replace("-", "_")
         args.output = _THIS_DIR / "data" / f"{slug}.jsonl"
 
-    gym_rows = build_dataset(
-        args.output, args.split, args.limit, args.instance_id, args.dataset_name, args.revision
-    )
+    gym_rows = build_dataset(args.output, args.split, args.limit, args.instance_id, args.dataset_name, args.revision)
 
     if args.build_image:
         build_sifs(gym_rows, args.sif_dir, args.jobs, args.force)
