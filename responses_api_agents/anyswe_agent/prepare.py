@@ -170,14 +170,18 @@ def build_dataset(
     limit: int | None,
     instance_id: str | None,
     dataset_name: str,
+    revision: str | None = None,
 ) -> list[dict]:
     try:
         from datasets import load_dataset
     except ImportError:
         sys.exit("`datasets` is required for dataset prep: pip install datasets")
 
-    print(f"Loading {dataset_name} [{split}]...", flush=True)
-    rows = load_dataset(dataset_name, split=split)
+    print(f"Loading {dataset_name} [{split}] @ {revision or 'main'}...", flush=True)
+    # Unpinned, this follows the upstream default branch. ScaleAI moved SWE-bench Pro's default
+    # config from 731 tasks to a 642-task V2 on 2026-09-22, which silently changed the benchmark
+    # mid-campaign, so callers that need a fixed task set pass the revision explicitly.
+    rows = load_dataset(dataset_name, split=split, revision=revision)
 
     if instance_id:
         rows = [r for r in rows if r["instance_id"] == instance_id]
@@ -214,6 +218,11 @@ def main() -> None:
         help="Output JSONL path (default: data/<dataset-slug>.jsonl)",
     )
     p.add_argument("--split", default=DEFAULT_SPLIT)
+    p.add_argument(
+        "--revision",
+        default=None,
+        help="HuggingFace revision (branch, tag or commit) to pin the dataset to",
+    )
     p.add_argument("--limit", type=int, default=None, help="Only the first N instances (default: all)")
     p.add_argument("--instance-id", default=None, help="Only this instance")
     p.add_argument(
@@ -231,7 +240,7 @@ def main() -> None:
         slug = args.dataset_name.split("/")[-1].lower().replace("-", "_")
         args.output = _THIS_DIR / "data" / f"{slug}.jsonl"
 
-    gym_rows = build_dataset(args.output, args.split, args.limit, args.instance_id, args.dataset_name)
+    gym_rows = build_dataset(args.output, args.split, args.limit, args.instance_id, args.dataset_name, args.revision)
 
     if args.build_image:
         build_sifs(gym_rows, args.sif_dir, args.jobs, args.force)
