@@ -178,9 +178,6 @@ def build_dataset(
         sys.exit("`datasets` is required for dataset prep: pip install datasets")
 
     print(f"Loading {dataset_name} [{split}] @ {revision or 'main'}...", flush=True)
-    # Unpinned, this follows the upstream default branch. ScaleAI moved SWE-bench Pro's default
-    # config from 731 tasks to a 642-task V2 on 2026-09-22, which silently changed the benchmark
-    # mid-campaign, so callers that need a fixed task set pass the revision explicitly.
     rows = load_dataset(dataset_name, split=split, revision=revision)
 
     if instance_id:
