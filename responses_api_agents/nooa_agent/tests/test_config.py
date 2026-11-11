@@ -84,6 +84,13 @@ def test_agent_config_rejects_unknown_fields() -> None:
     assert error["loc"] == ("max_step",)
 
 
+def test_agent_config_accepts_the_datasets_a_run_config_attaches() -> None:
+    # Harbor's generated per-taskset agent carries its rows as `datasets`.
+    entry = {"name": "tasks", "type": "benchmark", "verified": False, "jsonl_fpath": "/runs/tasks_agent.jsonl"}
+
+    assert [dataset.name for dataset in agent_config(datasets=[entry]).datasets] == ["tasks"]
+
+
 def test_agent_config_names_policy_call_budget_explicitly() -> None:
     assert agent_config().max_policy_calls is None
     assert agent_config(max_policy_calls=None).max_policy_calls is None
