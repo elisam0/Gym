@@ -1208,6 +1208,27 @@ contested: second_inner
         with raises(ConfigMissingValuesError):
             parser.raise_on_missing_values(config)
 
+    @mark.parametrize("outer_first", [True, False])
+    def test_inherit_from_a_source_that_itself_inherits_gets_the_whole_chain(self, outer_first: bool) -> None:
+        # e.g. Harbor's generated agent <- nooa_sandboxed's `agent` <- `nooa_agent`, in either key order.
+        entries = {
+            "outer": {"_inherit_from": "middle", "server": {"c": 3}},
+            "middle": {"_inherit_from": "base", "server": {"b": 2}},
+            "base": {"server": {"a": 1, "b": 0}},
+        }
+        order = ["outer", "middle", "base"] if outer_first else ["base", "middle", "outer"]
+        config = DictConfig({key: entries[key] for key in order})
+
+        GlobalConfigDictParser()._recursively_swap_keys(config)
+
+        assert OmegaConf.to_container(config.outer) == {"server": {"a": 1, "b": 2, "c": 3}}
+
+    def test_inherit_from_cycle_is_a_config_error(self) -> None:
+        config = DictConfig({"a": {"_inherit_from": "b", "x": 1}, "b": {"_inherit_from": "a", "y": 2}})
+
+        with raises(ConfigError, match="cycle"):
+            GlobalConfigDictParser()._recursively_swap_keys(config)
+
     def test_missing_value_in_list_is_reported_not_crash(self) -> None:
         # A '???' as a list element (or inside a dict nested in a list) must not crash the swap; it is
         # reported by collect_missing_value_paths with its indexed path.

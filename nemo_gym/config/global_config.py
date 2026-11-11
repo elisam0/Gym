@@ -1406,7 +1406,7 @@ For example, on the command line:
                 # We don't want to pop if it's just a copy
                 dict_containing_key_to_swap.pop(path_to_swap[-1], None)
 
-            swapped_value = self._recursive_index_dict_using_path(frozen_dict_config, path_to_swap)
+            swapped_value = self._resolve_swap_source(frozen_dict_config, path_to_swap)
 
             # If the source (leaf or an ancestor) is unset, the target inherits MISSING; skip the
             # property-merge and _delete_key handling and let raise_on_missing_values report it.
@@ -1419,12 +1419,31 @@ For example, on the command line:
 
             dict_config[k] = swapped_value
 
-            # TODO We may want to recurse again after swap since we are not guaranteed to traverse the swapped-from value before hitting this swap.
-
             if is_delete_property:
                 # Enforce that every key-to-delete exists
                 for key in keys_to_delete:
                     dict_config[k].pop(key)
+
+    def _resolve_swap_source(
+        self, frozen_dict_config: DictConfig, path: List[str], chain: tuple[str, ...] = ()
+    ) -> "DictConfig | object":
+        """The value at ``path``, with its own ``_inherit_from`` resolved first: sources are read from the config
+        as written, so a source that itself inherits would otherwise be copied without its parent's fields."""
+        dotted = ".".join(path)
+        if dotted in chain:
+            raise ConfigError(f"`{INHERIT_FROM_KEY_NAME}` cycle: {' -> '.join((*chain, dotted))}")
+        value = self._recursive_index_dict_using_path(frozen_dict_config, path)
+        is_dict = isinstance(value, DictConfig) and not OmegaConf.is_missing(value, INHERIT_FROM_KEY_NAME)
+        parent_path = value.get(INHERIT_FROM_KEY_NAME) if is_dict else None
+        if not isinstance(parent_path, str):
+            return value
+        parent = self._resolve_swap_source(frozen_dict_config, parent_path.split("."), (*chain, dotted))
+        if parent is _MISSING_REF:
+            return _MISSING_REF
+        merged = OmegaConf.merge(parent, value)
+        with open_dict(merged):
+            merged.pop(INHERIT_FROM_KEY_NAME)
+        return merged
 
     def _recursive_index_dict_using_path(self, dict_config: DictConfig, path: List[str]) -> "DictConfig | object":
         for k in path:
