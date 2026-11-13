@@ -70,6 +70,20 @@ def _is_codeact_iteration_exhaustion(error: BaseException) -> bool:
     )
 
 
+def _is_codeact_text_only_abort(error: BaseException) -> bool:
+    # The model answered with plain text too many times in a row, which is a gradable model outcome.
+    frame = _generation_error_frame(error)
+    if frame is None or frame.f_code is not CodeActStrategy._run_generation.__code__:
+        return False
+    session = frame.f_locals.get("session")
+    limit = frame.f_locals["self"].config.max_consecutive_text_only
+    return (
+        isinstance(session, CodeActSession)
+        and 0 < limit <= session.consecutive_text_only
+        and str(error).startswith("CodeAct aborted: LLM returned plain text without a tool call ")
+    )
+
+
 def _is_codeact_loop_stop(error: BaseException) -> bool:
     # Only the pinned loop guard's model-driven stop is a gradable outcome.
     frame = _raising_frame(error) if type(error) is LoopDetectedError else None
@@ -116,6 +130,8 @@ def policy_termination(
             # NOOA names this stop (raised by CodeActSession.build_failure_error, outside the generation frame);
             # the frame inspection below serves older pins.
             return NOOATerminationReason.MAX_ITERATIONS_EXCEEDED, str(error)
+        if _is_codeact_text_only_abort(error):
+            return NOOATerminationReason.INVALID_POLICY_OUTPUT, str(error)
         if _is_codeact_iteration_exhaustion(error):
             return NOOATerminationReason.MAX_ITERATIONS_EXCEEDED, str(error)
         if _is_codeact_loop_stop(error):

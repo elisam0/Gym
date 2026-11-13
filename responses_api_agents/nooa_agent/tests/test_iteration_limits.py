@@ -155,6 +155,7 @@ LIMIT_SCENARIOS = [
     ("output_text", NOOATerminationReason.MAX_OUTPUT_TOKENS_EXCEEDED),
     ("output_tool", NOOATerminationReason.MAX_OUTPUT_TOKENS_EXCEEDED),
     ("output_partial_tool", NOOATerminationReason.MAX_OUTPUT_TOKENS_EXCEEDED),
+    ("text_only", NOOATerminationReason.INVALID_POLICY_OUTPUT),
 ]
 
 
@@ -164,7 +165,7 @@ def assert_partial_evidence(response: NeMoGymResponse, *, scenario: str) -> None
     assert any(item.type == "reasoning" for item in response.output)
     assert any(item.type == "message" and item.content[0].text == "working on the task" for item in response.output)
     calls = [item for item in response.output if item.type == "function_call" and item.call_id == "call-1"]
-    if scenario == "output_text":
+    if scenario in {"output_text", "text_only"}:
         assert not calls
     else:
         assert len(calls) == 1
@@ -174,7 +175,7 @@ def assert_partial_evidence(response: NeMoGymResponse, *, scenario: str) -> None
     if scenario.startswith("output_"):
         assert response.incomplete_details.reason == "max_output_tokens"
         assert not any(item.type == "function_call_output" and item.call_id == "call-1" for item in response.output)
-    else:
+    elif scenario != "text_only":
         assert any(
             item.type == "function_call_output" and item.call_id == "call-1" and "partial progress" in item.output
             for item in response.output
@@ -256,7 +257,7 @@ async def test_real_codeact_environment_verifies_partial_response_once(
     assert _paths(client)[-3:] == ["/v1/agent_sessions/close", "/verify", "/close_session"]
 
 
-@pytest.mark.parametrize("scenario", ["text_only", "model_outage"])
+@pytest.mark.parametrize("scenario", ["model_outage"])
 async def test_other_codeact_limits_and_unrecovered_outage_fail_agent_activation(scenario: str) -> None:
     instance, model_calls = iteration_agent(scenario=scenario)
     req = await open_session(instance)
