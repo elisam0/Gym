@@ -31,6 +31,7 @@ from nemo_gym.base_responses_api_agent import (
     SimpleResponsesAPIAgent,
 )
 from nemo_gym.core import (
+    AGENT_TIMEOUT,
     MODEL_REQUEST_ERROR,
     NeMoGymResponse,
     NeMoGymResponseCreateParamsNonStreaming,
@@ -86,6 +87,8 @@ class NOOAAgent(SimpleResponsesAPIAgent):
             and 400 <= status <= 599
         ):
             return AgentOutcome(failure_kind=MODEL_REQUEST_ERROR, status_code=status)
+        if native_result.get("termination_reason") == NOOATerminationReason.WORKER_DEADLINE_EXCEEDED:
+            return AgentOutcome(failure_kind=AGENT_TIMEOUT)
         return AgentOutcome(failure_kind="unknown")
 
     def setup_webserver(self) -> FastAPI:
@@ -214,13 +217,21 @@ class NOOAAgent(SimpleResponsesAPIAgent):
                 state.result.termination_reason = NOOATerminationReason.CANCELLED
             raise
         except Exception as error:
+            # A spent worker budget is reported as a failed response, so the environment's outcome policy keeps it
+            # ungraded and does not retry it, instead of an HTTP 500 that looks like a server failure.
+            deadline = (
+                isinstance(error, NOOARunFailure)
+                and error.result.termination_reason is NOOATerminationReason.WORKER_DEADLINE_EXCEEDED
+            )
             if isinstance(error, NOOARunFailure):
                 state.result = error.result
-                state.result.termination_reason = NOOATerminationReason.INFRASTRUCTURE_ERROR
-                state.result.termination_error = str(error)
-            if is_transient_infrastructure_error(error):
-                raise HTTPException(503, "NOOA dependency request failed") from error
-            raise
+                if not deadline:
+                    state.result.termination_reason = NOOATerminationReason.INFRASTRUCTURE_ERROR
+                    state.result.termination_error = str(error)
+            if not deadline:
+                if is_transient_infrastructure_error(error):
+                    raise HTTPException(503, "NOOA dependency request failed") from error
+                raise
         return self.report_outcome(
             finalize_run_result(state.result)[0],
             {

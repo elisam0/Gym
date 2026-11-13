@@ -33,6 +33,11 @@ class NOOATerminationReason(StrEnum):
     TIMEOUT_EXCEEDED = "timeout_exceeded"
     CANCELLED = "cancelled"
     INFRASTRUCTURE_ERROR = "infrastructure_error"
+    WORKER_DEADLINE_EXCEEDED = "worker_deadline_exceeded"
+
+
+class NOOAWorkerDeadlineError(RuntimeError):
+    """The sandbox worker used its whole execution budget; retrying would spend the same budget again."""
 
 
 def cleanup_errors(error: BaseException) -> tuple[BaseException, ...]:

@@ -210,7 +210,12 @@ async def test_independent_execution_failure_overrides_gradable_artifact(receipt
     request = payload().request
     with pytest.raises(NOOARunFailure) as caught:
         await r.run(request)
-    assert caught.value.result.termination_reason is NOOATerminationReason.INFRASTRUCTURE_ERROR
+    expected = (
+        NOOATerminationReason.WORKER_DEADLINE_EXCEEDED
+        if receipt.get("timed_out")
+        else NOOATerminationReason.INFRASTRUCTURE_ERROR
+    )
+    assert caught.value.result.termination_reason is expected
     assert caught.value.result.episode.response.status == "failed"
     assert caught.value.result.episode.response.output == final.response.output
     assert r.artifact.termination_reason is reason
@@ -867,7 +872,7 @@ async def test_worker_deadline_preserves_checkpoint_without_retryable_dependency
     with pytest.raises(NOOARunFailure, match="worker exceeded its execution deadline") as caught:
         await r.run(payload().request)
     assert not is_transient_infrastructure_error(caught.value)
-    assert caught.value.result.termination_reason is NOOATerminationReason.INFRASTRUCTURE_ERROR
+    assert caught.value.result.termination_reason is NOOATerminationReason.WORKER_DEADLINE_EXCEEDED
     assert caught.value.result.episode.response.status == "failed"
     assert caught.value.result.episode.response.output == checkpoint_artifact().response.output
     assert "partial_checkpoint" in {gap.code for gap in r.observations.gaps}
@@ -966,7 +971,11 @@ async def test_capture_error_does_not_hide_confirmed_worker_failure(
     if has_checkpoint:
         assert isinstance(caught.value, NOOARunFailure)
         assert caught.value.result.episode.response.output == checkpoint_artifact().response.output
-        assert caught.value.result.termination_reason is NOOATerminationReason.INFRASTRUCTURE_ERROR
+        assert caught.value.result.termination_reason is (
+            NOOATerminationReason.WORKER_DEADLINE_EXCEEDED
+            if "execution deadline" in message
+            else NOOATerminationReason.INFRASTRUCTURE_ERROR
+        )
     s.exec.return_value = SandboxExecResult("", "", 0)
     await r.close()
     s.disconnect.assert_awaited_once()

@@ -333,7 +333,6 @@ async def test_failed_connect_closes_provider_without_retaining_seeded_state(set
 async def test_worker_budget_failure_is_not_reported_as_retryable_dependency_outage(setup) -> None:
     import json
 
-    from responses_api_agents.nooa_agent.runner import NOOARunFailure
     from responses_api_agents.nooa_agent.tests.test_sandbox_runner import checkpoint_artifact, cleanup_receipt
 
     instance, sandbox, _, _ = setup
@@ -341,10 +340,15 @@ async def test_worker_budget_failure_is_not_reported_as_retryable_dependency_out
     runner = instance._require_agent_session("session").runner
     sandbox.files[runner.directory + "/cleanup.json"] = json.dumps(cleanup_receipt(timed_out=True))
     sandbox.files[runner.directory + "/checkpoint.json"] = checkpoint_artifact().model_dump_json()
-    with pytest.raises(NOOARunFailure, match="worker exceeded its execution deadline"):
-        await instance.responses(request(session_id="session"), NeMoGymResponseCreateParamsNonStreaming(input="task"))
+    # A spent worker budget comes back as a failed response classified as a timeout, not as a server error.
+    response = await instance.responses(
+        request(session_id="session"), NeMoGymResponseCreateParamsNonStreaming(input="task")
+    )
+    assert response.status == "failed"
+    assert "worker exceeded its execution deadline" in response.error.message
+    assert '"failure_kind":"agent_timeout"' in response.metadata["ng_agent_outcome"]
     receipt = await close(instance)
-    assert NOOATerminationReason.INFRASTRUCTURE_ERROR in {gap.code for gap in receipt.agent_observations.gaps}
+    assert NOOATerminationReason.WORKER_DEADLINE_EXCEEDED in {gap.code for gap in receipt.agent_observations.gaps}
 
 
 async def test_cancelled_request_stays_cancelled_even_when_session_is_closing(setup) -> None:

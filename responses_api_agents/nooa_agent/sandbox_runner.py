@@ -19,7 +19,7 @@ from responses_api_agents.nooa_agent.config import NOOAInvocationConfig
 from responses_api_agents.nooa_agent.result import is_transient_infrastructure_error, set_response_lifecycle
 from responses_api_agents.nooa_agent.runner import NOOARunFailure, NOOARunRequest, NOOARunResult
 from responses_api_agents.nooa_agent.sandbox_entrypoint import SandboxCheckpoint, SandboxInput, SandboxResult
-from responses_api_agents.nooa_agent.termination import NOOATerminationReason
+from responses_api_agents.nooa_agent.termination import NOOATerminationReason, NOOAWorkerDeadlineError, cleanup_errors
 
 
 LOGGER = logging.getLogger(__name__)
@@ -139,7 +139,7 @@ class SandboxNOOARunner:
                 await self._collect_diagnostics()
             if cleanup["timed_out"]:
                 # Exhausting the worker budget is not a retryable dependency outage.
-                raise RuntimeError("NOOA sandbox worker exceeded its execution deadline")
+                raise NOOAWorkerDeadlineError("NOOA sandbox worker exceeded its execution deadline")
             if cleanup["error"]:
                 raise RuntimeError(f"NOOA sandbox supervisor failed: {cleanup['error']}")
             if cleanup["return_code"] != 0:
@@ -163,11 +163,12 @@ class SandboxNOOARunner:
                 request.resource_cookies.update(evidence.resource_cookies)
                 if evidence.response is not None:
                     result = evidence.run_result()
-                    reason = (
-                        NOOATerminationReason.CANCELLED
-                        if isinstance(error, asyncio.CancelledError)
-                        else NOOATerminationReason.INFRASTRUCTURE_ERROR
-                    )
+                    if isinstance(error, asyncio.CancelledError):
+                        reason = NOOATerminationReason.CANCELLED
+                    elif isinstance(error, NOOAWorkerDeadlineError) and not cleanup_errors(error):
+                        reason = NOOATerminationReason.WORKER_DEADLINE_EXCEEDED
+                    else:
+                        reason = NOOATerminationReason.INFRASTRUCTURE_ERROR
                     detail = str(error) or "NOOA execution was cancelled"
                     result.termination_reason = reason
                     result.termination_error = detail
