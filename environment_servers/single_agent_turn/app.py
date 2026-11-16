@@ -10,7 +10,13 @@ from warnings import warn
 from fastapi import Body
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from nemo_gym.agent_outcome import AgentOutcomePolicyConfig, OutcomeAction, agent_outcome_policy
+from nemo_gym.agent_outcome import (
+    AGENT_OUTCOME_METADATA_KEY,
+    AgentOutcome,
+    AgentOutcomePolicyConfig,
+    OutcomeAction,
+    agent_outcome_policy,
+)
 from nemo_gym.base_responses_api_agent import (
     AGENT_ACTIVATION_HEADER,
     AgentCloseSessionRequest,
@@ -263,10 +269,16 @@ class SingleAgentTurnEnvironmentServer(BaseEnvironmentServer[SingleAgentTurnRequ
         if stage == "verify":
             action = agent_outcome_policy(agent_response, config=self.config.agent_outcome_policy)
             if action != OutcomeAction.VERIFY:
+                try:  # the harness's own cause labels the failure row; malformed evidence leaves it unlabeled
+                    raw = agent_response.metadata[AGENT_OUTCOME_METADATA_KEY]
+                    failure_kind = AgentOutcome.model_validate_json(raw).failure_kind
+                except (KeyError, TypeError, ValueError):
+                    failure_kind = None
                 raise self._failure(
                     stage="agent",
                     failure_reason=agent_response.error.message if agent_response.error else "Agent reported failure",
                     terminal=action == OutcomeAction.FAIL,
+                    failure_kind=failure_kind,
                     partial_response=agent_response,
                     agent_observations=observations,
                 )
@@ -576,6 +588,7 @@ class SingleAgentTurnEnvironmentServer(BaseEnvironmentServer[SingleAgentTurnRequ
         stage: str,
         failure_reason: str,
         terminal: bool,
+        failure_kind: str | None = None,
         partial_response: Any = None,
         agent_observations: Any = None,
         trajectory: Any = None,
@@ -588,6 +601,7 @@ class SingleAgentTurnEnvironmentServer(BaseEnvironmentServer[SingleAgentTurnRequ
                 stage=stage,
                 failure_reason=failure_reason[:2000],
                 terminal=terminal,
+                failure_kind=failure_kind,
                 partial_response=partial_response,
                 agent_observations=agent_observations,
                 trajectory=trajectory,
