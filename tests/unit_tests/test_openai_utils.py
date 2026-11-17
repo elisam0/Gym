@@ -637,3 +637,28 @@ class TestProviderBackoff:
 
         assert await client._request_with_retry(url="https://example.com/v1/responses") is success
         sleep.assert_awaited_once_with(3.0)
+
+    async def test_session_key_headers_carry_the_current_rollout(self, monkeypatch) -> None:
+        sent = []
+
+        async def fake_request(**kwargs):
+            sent.append(kwargs["headers"])
+            return SimpleNamespace(status=200)
+
+        monkeypatch.setattr(openai_utils_module, "request", fake_request)
+        client = NeMoGymAsyncOpenAI(
+            api_key="abc",
+            base_url="https://example.test/v1",
+            default_headers={"X-Static": "1"},
+            session_key_headers=["X-Session"],
+        )
+
+        with rollout_context("trial-1"):
+            await client._request(method="POST", url="https://example.test/v1/responses")
+        await client._request(method="POST", url="https://example.test/v1/responses")
+        with rollout_context("trial-2"):
+            await client._request(method="POST", url="https://example.test/v1/responses", headers={"x-session": "own"})
+
+        assert sent[0]["X-Session"] == "trial-1" and sent[0]["X-Static"] == "1"
+        assert "X-Session" not in sent[1]
+        assert [v for n, v in sent[2].items() if n.lower() == "x-session"] == ["own"]

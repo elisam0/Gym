@@ -52,6 +52,7 @@ from nemo_gym.client.server_client import apply_rollout_prefix, rollout_path_pre
 from nemo_gym.config.config_types import ROLLOUT_PATH_PREFIX, TOKEN_CAPTURE_PATH_SEGMENT, ModelServerRef
 from nemo_gym.config.global_config import (
     OBSERVABILITY_ENABLED_KEY_NAME,
+    ROLLOUT_CORRELATION_KEY_NAME,
     TOKEN_ID_CAPTURE_BLOCK,
     get_first_server_config_dict,
 )
@@ -1047,6 +1048,7 @@ class SimpleResponsesAPIAgent(BaseResponsesAPIAgent, AggregateMetricsMixin, Simp
         """
         return (
             self._model_call_capture_enabled()
+            or self._rollout_correlation_enabled()
             or self._token_id_capture_enabled()
             # Checkpointing keys a legacy /run by its rollout, so its self-dispatch must carry the rollout.
             or self._checkpoint_participant is not None
@@ -1059,6 +1061,13 @@ class SimpleResponsesAPIAgent(BaseResponsesAPIAgent, AggregateMetricsMixin, Simp
         if not isinstance(global_config, Mapping):
             return False
         return bool(global_config.get(OBSERVABILITY_ENABLED_KEY_NAME, False))
+
+    def _rollout_correlation_enabled(self) -> bool:
+        """Whether the run asked for rollout prefixes without capture."""
+        global_config = getattr(self.server_client, "global_config_dict", None)
+        if not isinstance(global_config, Mapping):
+            return False
+        return bool(global_config.get(ROLLOUT_CORRELATION_KEY_NAME, False))
 
     def _token_id_capture_enabled(self) -> bool:
         """Whether this agent explicitly opted into training-token capture."""

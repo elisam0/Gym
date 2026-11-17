@@ -154,6 +154,14 @@ def current_rollout_id() -> Optional[str]:
     return _ROLLOUT_ID.get()
 
 
+def current_session_key() -> Optional[str]:
+    """The key an upstream router uses to keep one conversation on one replica.
+
+    None outside a rollout. A session is a rollout attempt: the key is the capture key (`<rollout id>[-a<N>]`).
+    """
+    return _ROLLOUT_ID.get()
+
+
 def current_episode_id() -> Optional[EpisodeId]:
     """Return the logical rollout and attempt carried by the current capture key."""
     capture_key = _ROLLOUT_ID.get()
