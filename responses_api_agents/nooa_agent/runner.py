@@ -195,7 +195,7 @@ class InProcessNOOARunner:
 
         trace = GymTraceHooks(on_progress=checkpoint)
         sampling_overrides = request.responses_create_params.model_dump(
-            include={"temperature", "top_p", "max_output_tokens"}, exclude_unset=True, exclude_none=True
+            include={"temperature", "top_p", "max_output_tokens", "reasoning"}, exclude_unset=True, exclude_none=True
         )
         llm = GymResponsesLLM(
             server_client=self._server_client,
