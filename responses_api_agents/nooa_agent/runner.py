@@ -30,7 +30,7 @@ from aiohttp import ClientResponseError
 from nooa.runtime.hooks import hooks_scope
 
 from nemo_gym.core import NeMoGymResponseCreateParamsNonStreaming
-from nemo_gym.server_runtime import DirectHTTPToolAccess
+from nemo_gym.server_runtime import DirectHTTPToolAccess, MCPToolAccess
 from nemo_gym.trajectory import AgentEpisode, TrajectoryRecord
 from responses_api_agents.nooa_agent.gym_llm import (
     GymModelClient,
@@ -55,6 +55,9 @@ class NOOARunRequest:
     responses_create_params: NeMoGymResponseCreateParamsNonStreaming
     model_url_path: str
     tool_access: DirectHTTPToolAccess | None = None
+    # MCP servers the environment granted. An invocation adapter that declares `consumes_mcp_access` configures its
+    # agent to use them; they reach it as the agent class's `gym_mcp_accesses`.
+    mcp_accesses: tuple[MCPToolAccess, ...] = ()
     model_cookies: dict[str, str] = field(default_factory=dict)
     resource_cookies: dict[str, str] = field(default_factory=dict)
     task_id: str = "unknown"
@@ -219,6 +222,7 @@ class InProcessNOOARunner:
             dispatcher=dispatcher,
             tools=list(request.responses_create_params.tools),
         )
+        agent_class.gym_mcp_accesses = tuple(request.mcp_accesses)
         agent = agent_class(llm=llm, **copy.deepcopy(self._invocation.init_kwargs))
         validate_agent_resource_method_bindings(agent)
 

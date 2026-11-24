@@ -313,6 +313,33 @@ async def test_sessions_and_required_grants_are_validated_before_execution(monke
     await close(instance)
 
 
+async def test_an_mcp_grant_is_accepted_only_by_an_adapter_that_uses_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    grant = {
+        "kind": "mcp",
+        "name": "tools",
+        "required": True,
+        "connection": {"transport": "streamable_http", "url": "http://resources/mcp"},
+    }
+    instance, _ = agent(monkeypatch)
+
+    async def ignores_mcp(agent, request):
+        return None
+
+    monkeypatch.setattr(app_module, "load_invocation_adapter", lambda path: ignores_mcp)
+    with pytest.raises(HTTPException, match="direct HTTP tool grants only"):
+        await open_session(instance, tool_accesses=[grant])
+
+    async def uses_mcp(agent, request):
+        return None
+
+    uses_mcp.consumes_mcp_access = True
+    monkeypatch.setattr(app_module, "load_invocation_adapter", lambda path: uses_mcp)
+    await open_session(instance, tool_accesses=[grant])
+    state = instance._require_agent_session("session")
+    assert [access.name for access in state.mcp_accesses] == ["tools"] and state.tool_access is None
+    await close(instance)
+
+
 def test_legacy_run_route_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
     instance, _ = agent(monkeypatch)
     paths = instance.setup_webserver().openapi()["paths"]

@@ -38,9 +38,10 @@ from nemo_gym.core import (
     rollout_context,
 )
 from nemo_gym.sandbox import AsyncSandbox, create_provider, resolve_provider_config
-from nemo_gym.server_runtime import DirectHTTPToolAccess
+from nemo_gym.server_runtime import DirectHTTPToolAccess, MCPToolAccess
 from nemo_gym.trajectory import AgentInvocation
 from responses_api_agents.nooa_agent.config import NOOAAgentConfig
+from responses_api_agents.nooa_agent.invocation import load_invocation_adapter
 from responses_api_agents.nooa_agent.provenance import provenance_metadata
 from responses_api_agents.nooa_agent.result import finalize_run_result, is_transient_infrastructure_error
 from responses_api_agents.nooa_agent.runner import (
@@ -58,6 +59,7 @@ from responses_api_agents.nooa_agent.termination import NOOATerminationReason
 @dataclass
 class NOOASessionState(AgentSessionState):
     tool_access: DirectHTTPToolAccess | None = None
+    mcp_accesses: tuple[MCPToolAccess, ...] = ()
     resources_cookies: dict[str, str] = field(default_factory=dict)
     model_cookies: dict[str, str] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -101,8 +103,18 @@ class NOOAAgent(SimpleResponsesAPIAgent):
 
     async def _seed_agent_session_state(self, body: AgentSeedSessionRequest) -> NOOASessionState:
         accesses = self.effective_tool_accesses(body)
-        if any(access.required and not isinstance(access, DirectHTTPToolAccess) for access in accesses):
-            raise HTTPException(422, "NOOA supports direct HTTP tool grants only")
+        mcp = tuple(access for access in accesses if isinstance(access, MCPToolAccess))
+        if any(
+            access.required and not isinstance(access, (DirectHTTPToolAccess, MCPToolAccess)) for access in accesses
+        ):
+            raise HTTPException(422, "NOOA supports direct HTTP and MCP tool grants only")
+        if mcp and not getattr(
+            load_invocation_adapter(self.config.nooa.invocation_adapter), "consumes_mcp_access", False
+        ):
+            # An adapter that ignored a required grant would run the agent without the tools the task needs.
+            raise HTTPException(
+                422, "NOOA supports direct HTTP tool grants only, unless its invocation adapter uses MCP grants"
+            )
         direct = [access for access in accesses if isinstance(access, DirectHTTPToolAccess)]
         if len(direct) > 1:
             raise HTTPException(422, "NOOA supports at most one direct HTTP tool grant")
@@ -110,6 +122,7 @@ class NOOAAgent(SimpleResponsesAPIAgent):
         state = NOOASessionState(
             request=body,
             tool_access=access,
+            mcp_accesses=mcp,
             resources_cookies=dict(access.cookies) if access else {},
         )
         if self.config.nooa.execution_mode == "embedded":
@@ -207,6 +220,7 @@ class NOOAAgent(SimpleResponsesAPIAgent):
                         model_cookies=state.model_cookies,
                         resource_cookies=state.resources_cookies,
                         tool_access=state.tool_access,
+                        mcp_accesses=state.mcp_accesses,
                         task_id=state.request.task_id.task_id,
                         rollout_id=state.request.episode_id.capture_key,
                     )
