@@ -13,12 +13,17 @@ Gym's Environment Server.
 Run from the Gym checkout with the benchmark's preparation dependencies installed:
 
 ```bash
-git clone https://github.com/harbor-framework/terminal-bench-2-1 \
-  benchmarks/terminal_bench_2_1/terminal-bench-2-1
-git -C benchmarks/terminal_bench_2_1/terminal-bench-2-1 \
-  checkout --detach 7131e4375048a0e408a8fb404b5f499d726b695b
-python benchmarks/terminal_bench_2_1/prepare.py
+python benchmarks/terminal_bench_2_1/prepare.py \
+  --task-revision 7131e4375048a0e408a8fb404b5f499d726b695b
 ```
+
+`--task-revision` accepts a full 40-character commit SHA. Preparation checks out that
+commit in detached HEAD mode and refuses modified task checkouts, including untracked
+files and ignored verifier files. Use `--task-repository URL` to select a fork; an
+existing checkout must have that origin when pinning a revision. Without
+`--task-revision`, preparation keeps the existing checkout or clones the repository's
+default branch. Python callers can pass `prepare(task_revision=..., task_repository=...)`.
+Pinning task source does not freeze mutable Docker image tags.
 
 Keep task tests and solutions on the host; do not mount the benchmark checkout
 into task containers. Resources uploads verifier assets after the agent closes
